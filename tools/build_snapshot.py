@@ -161,6 +161,77 @@ def _build_one_once(conn, title):
     return entry
 
 
+def _build_one_by_id_once(conn, bbbs, expected_title):
+    """按 bbbs 直接建库（857 扩量）：跳过按名检索，元数据与目录取详情页。
+
+    标题纪律不变：详情页标题与枚举清单标题完全一致才入库。
+    """
+    entry = {"title": expected_title, "ok": False}
+    try:
+        details = srv.fetch_law_details(bbbs)
+        title = srv.clean_title(details.get("title") or "")
+        if title != expected_title:
+            entry["error"] = (f"详情页标题不一致（清单《{expected_title}》，"
+                              f"详情《{title}》），为防张冠李戴不入库")
+            return entry
+        flat = srv.flatten_toc(details.get("content") or {})
+        paragraphs = srv.fetch_law_docx_paragraphs(bbbs)
+        articles = srv.split_articles(paragraphs)
+        if not articles:
+            entry["error"] = "官方全文未切出任何条文"
+            return entry
+        _zh, _en, code = srv.map_status(details.get("sxx"))
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO laws VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (bbbs, title, details.get("zdjgName") or "",
+             details.get("flxz") or "", details.get("gbrq") or "",
+             details.get("sxrq") or "", code,
+             f"https://flk.npc.gov.cn/detail.html?bbbs={bbbs}",
+             json.dumps(flat, ensure_ascii=False), len(articles), now))
+        conn.execute("DELETE FROM articles WHERE bbbs=?", (bbbs,))
+        conn.executemany(
+            "INSERT OR REPLACE INTO articles VALUES (?,?,?,?,?)",
+            [(bbbs, a["num"], a["sub"] or 0, a["heading"], a["text"])
+             for a in articles])
+        conn.commit()
+        entry.update({"ok": True, "id": bbbs,
+                      "article_count": len(articles),
+                      "toc_article_count": srv.toc_article_count(flat),
+                      "fetched_at": now})
+    except Exception as e:  # 单部失败不中断全程
+        entry["error"] = f"{type(e).__name__}: {e}"
+    return entry
+
+
+def build_one_by_id(conn, bbbs, title, delay, attempts=4):
+    entry = {"title": title, "ok": False}
+    for attempt in range(attempts):
+        entry = _build_one_by_id_once(conn, bbbs, title)
+        if entry["ok"]:
+            break
+        if attempt + 1 < attempts:
+            print(f"    第 {attempt + 1} 次失败：{entry.get('error')}；"
+                  "8 秒后整部重试", flush=True)
+            time.sleep(8)
+    if delay:
+        time.sleep(delay)
+    return entry
+
+
+def rebuild_coverage(conn, failures=()):
+    coverage = []
+    for row in conn.execute(
+            "SELECT bbbs, title, status_code, article_count, fetched_at "
+            "FROM laws"):
+        zh, _en, _c = srv.map_status(row[2])
+        coverage.append({"title": row[1], "ok": True, "id": row[0],
+                         "status": zh, "status_code": row[2],
+                         "article_count": row[3], "fetched_at": row[4]})
+    coverage.extend(failures)
+    return coverage
+
+
 def write_meta(conn, coverage):
     conn.execute("INSERT OR REPLACE INTO meta VALUES ('built_at', ?)",
                  (datetime.now(timezone.utc).isoformat(),))
@@ -191,10 +262,52 @@ def main():
     ap.add_argument("--delay", type=float, default=2.0,
                     help="每部法规之间的间隔秒数（默认 2）")
     ap.add_argument("--list", action="store_true", help="只打印当前覆盖")
+    ap.add_argument("--ids", default="",
+                    help="按枚举清单 JSONL 批量建库（857 扩量）：每行含 bbbs/title")
+    ap.add_argument("--progress", default="", help="进度 JSON 落盘路径（--ids 模式）")
     args = ap.parse_args()
 
     conn = init_db(args.db)
     if args.list:
+        print_coverage(conn)
+        return 0
+    if args.ids:
+        rows = [json.loads(line) for line in
+                open(args.ids, encoding="utf-8") if line.strip()]
+        in_db_ids = existing_ids(conn)
+        todo = [r for r in rows if r["bbbs"] not in in_db_ids]
+        print(f"清单 {len(rows)} 部；库内已有 {len(in_db_ids)} 部；"
+              f"本轮待构建 {len(todo)} 部", flush=True)
+        ok = fail = 0
+        failures = []
+        for i, row in enumerate(todo, 1):
+            entry = build_one_by_id(conn, row["bbbs"], row["title"],
+                                    args.delay)
+            if entry["ok"]:
+                ok += 1
+            else:
+                fail += 1
+                failures.append(entry)
+                print(f"[{i}/{len(todo)}] 《{row['title']}》 ✘ "
+                      f"{entry.get('error')}", flush=True)
+            if i % 25 == 0:
+                total_laws = conn.execute(
+                    "SELECT COUNT(*) FROM laws").fetchone()[0]
+                total_arts = conn.execute(
+                    "SELECT COUNT(*) FROM articles").fetchone()[0]
+                print(f"[{i}/{len(todo)}] ok={ok} fail={fail} 库内 "
+                      f"{total_laws} 部/{total_arts} 条", flush=True)
+                write_meta(conn, rebuild_coverage(conn, failures))
+                if args.progress:
+                    with open(args.progress, "w", encoding="utf-8") as fh:
+                        json.dump({"processed": i, "todo": len(todo),
+                                   "ok": ok, "fail": fail,
+                                   "laws": total_laws, "articles": total_arts,
+                                   "updated_at": datetime.now(
+                                       timezone.utc).isoformat()},
+                                  fh, ensure_ascii=False)
+        write_meta(conn, rebuild_coverage(conn, failures))
+        print(f"完成：本轮新入库 {ok} 部，失败 {fail} 部；库内现状：")
         print_coverage(conn)
         return 0
     targets = args.law or PRIORITY_LAWS

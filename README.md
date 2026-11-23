@@ -112,7 +112,7 @@ python3 -m unittest discover -s tests -v
 
 ## 致谢
 
-- **flk-mcp**（朋友分享的开源项目）：本项目受其启发——三库分工、
+- **flk-mcp**（[@lh4718655-jpg](https://github.com/lh4718655-jpg) 分享的开源项目）：本项目受其启发——三库分工、
   效力标注、链接溯源、白名单纪律等经验均继承自它，核验拦截、
   TLS 纪律与测试体系为本项目补齐的部分。独立重写实现，未复制其代码。
 - [tlgzs/china-law-search](https://github.com/tlgzs/china-law-search)

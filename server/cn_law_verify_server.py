@@ -55,7 +55,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 SERVER_NAME = "cn-law-verify"
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.5.0"
 RESULT_SCHEMA = "cn-law-verify/result@1"
 SUPPORTED_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL = "2025-03-26"
@@ -68,7 +68,7 @@ FLK_BASE = "https://flk.npc.gov.cn"
 API_HOSTS = {"flk.npc.gov.cn", "wb.flk.npc.gov.cn",
              "xzfg.moj.gov.cn", "sousuoht.www.gov.cn"}
 DOWNLOAD_HOST_SUFFIXES = (".cucloud.cn",)
-USER_AGENT = "cn-law-verify/0.3.0 (+https://github.com/songoao25/cn-law-verify)"
+USER_AGENT = "cn-law-verify/0.4.0 (+https://github.com/songoao25/cn-law-verify)"
 
 TIMEOUT = float(os.environ.get("CN_LAW_VERIFY_TIMEOUT", "30"))
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024      # 下载上限 50MB
@@ -367,6 +367,24 @@ def row_to_result(row):
 
 _STATUS_PREFERENCE = {3: 0, 2: 1, 4: 2, 1: 3}
 
+_NAME_EXT_KEYWORDS = ("实施条例", "实施细则", "条例", "细则", "规定",
+                      "办法", "解释", "修正案", "规则", "意见", "决定")
+
+
+def _name_mismatch_rest(name, title):
+    """所给法名＝定位到的法规名＋实质后缀时，返回多出的部分；否则 None。
+
+    859 新增（防御性）：包含匹配命中的若是「《民法典》被写成
+    《民法典实施条例》」这类多后缀名称，定位到的其实是另一部法规，
+    核验结论必须显式提示，不能默默按定位到的法规出结论。
+    """
+    if not title or name == title or title not in (name or ""):
+        return None
+    rest = name.replace(title, "", 1).strip("（）()·、，,：:；;【】[]《》 ")
+    if rest and any(k in rest for k in _NAME_EXT_KEYWORDS):
+        return rest
+    return None
+
 
 def find_law(law_name):
     """按法名精确定位一部法规：同名多版本时优先现行有效版。
@@ -389,7 +407,11 @@ def find_law(law_name):
     if contains:
         contains.sort(key=lambda r: (_STATUS_PREFERENCE.get(r["status_code"], 9),
                                      abs(len(r["title"]) - len(name))))
-        return contains[0], "contains"
+        chosen = contains[0]
+        rest = _name_mismatch_rest(name, chosen["title"])
+        if rest:
+            chosen["name_mismatch"] = rest
+        return chosen, "contains"
     return None, None
 
 
@@ -611,7 +633,13 @@ _CN_UNITS = {"十": 10, "百": 100, "千": 1000}
 
 
 def cn_to_int(s):
-    """中文数字 → 整数（支持到千位，够法条编号用）。"""
+    """中文数字 → 整数（支持到千位，够法条编号用）。
+
+    859 加固：解析后做往返校验——结果按规范写法（int_to_cn）重渲染，
+    与输入不一致即判非法。否则「第五七七条」这类无单位连写会被逐字
+    覆盖、静默解析成 7，核验会打到完全不同的条文上还不自知。
+    「两」按「二」的异体接受，「一十」按「十」的口语变体接受。
+    """
     s = (s or "").strip()
     if not s:
         raise ValueError("空数字")
@@ -627,7 +655,12 @@ def cn_to_int(s):
             current = 0
         else:
             raise ValueError(f"无法解析的中文数字：{s}")
-    return total + current
+    total += current
+    canonical = int_to_cn(total)
+    norm_in = s.replace("两", "二")
+    if norm_in not in (canonical, "一" + canonical):
+        raise ValueError(f"无法解析的中文数字：{s}")
+    return total
 
 
 def int_to_cn(n):
@@ -652,15 +685,28 @@ def int_to_cn(n):
     return text
 
 
+_FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _fw_norm(s):
+    """全角数字 → 半角（逐字 1:1 替换，不改变字符串长度与位置）。"""
+    return (s or "").translate(_FW_DIGITS)
+
+
 _ARTICLE_INPUT_RE = re.compile(
     r"^第?\s*([0-9]+|[零一二三四五六七八九十百千两]+)\s*条"
     r"(?:之\s*([0-9]+|[零一二三四五六七八九十百千两]+))?$")
+_ARTICLE_SUFFIX_RE = re.compile(
+    r"(?:\s*第\s*(?:[0-9]+|[零一二三四五六七八九十百千两]+)\s*[款项]"
+    r"(?:\s*第\s*(?:[0-9]+|[零一二三四五六七八九十百千两]+)\s*目)?)+\s*$")
 
 
 def normalize_article(article):
     """条号入参归一化 → (条数 int, 之几 int|None)。
 
     接受：577 / "577" / "第577条" / "第五百七十七条" / "第五百七十七条之一"。
+    859 起另接受全角数字（第５７７条）与尾随款/项定位（第577条第2款——
+    本工具只核验到条一级，款项定位被忽略，不因此报错）。
     """
     if isinstance(article, bool) or not isinstance(article, (int, str)):
         raise ValueError(
@@ -668,7 +714,8 @@ def normalize_article(article):
             "下一步：请把条号写成如「第五百七十七条」或 577 再发。")
     if isinstance(article, int):
         return article, None
-    s = str(article or "").strip()
+    s = _fw_norm(str(article or "").strip().replace("條", "条"))
+    s = _ARTICLE_SUFFIX_RE.sub("", s)
     m = _ARTICLE_INPUT_RE.match(s)
     if not m:
         raise ValueError(f"无法解析的条号：{article!r}")
@@ -798,11 +845,33 @@ _CITATION_RE = re.compile(
     r"《([^》]{2,60})》\s*第\s*([0-9]+|[零一二三四五六七八九十百千两]+)\s*条"
     r"(?:\s*之\s*([0-9]+|[零一二三四五六七八九十百千两]+))?")
 
+# 无书名号引注（859 新增）：「根据民法典第五百七十七条」是中文法律
+# 文本里同样常见的写法，857 版只认《》形式，这类引注会被整段核验
+# 静默漏掉——编造的条文只要不写书名号就能绕过核验。法名用受限字集
+# 拼（剔除虚词/动词字，避免把「根据」「依照」等吞进法名），且必须以
+# 法规类后缀结尾；「本法/本条例」等自指称谓不算引注，另行剔除。
+_BARE_NAME_FORBIDDEN = "根据依据按照依照关于对于向被将把与及或的了是在由从到给让这那其之说，。；、：:（）()《》「」『』\"'“”‘’\\s"
+_BARE_CITATION_RE = re.compile(
+    rf"([^{_BARE_NAME_FORBIDDEN}]{{1,30}}?法典"
+    rf"|[^{_BARE_NAME_FORBIDDEN}]{{2,30}}?"
+    r"(?:条例|规定|办法|细则|解释|规则|章程|通则|法))"
+    r"\s*第\s*([0-9]+|[零一二三四五六七八九十百千两]+)\s*条"
+    r"(?:\s*之\s*([0-9]+|[零一二三四五六七八九十百千两]+))?")
+_BARE_SELF_REFS = {"本法", "该法", "本条例", "本办法", "本规定", "本细则",
+                   "本规则", "本章程", "该条例", "该办法"}
+
 
 def extract_citations(text):
-    """从整段文本中抽取《法名》第N条形式的引注（P2 供 check 工具用）。"""
+    """从整段文本中抽取引注：《法名》第N条 与无法名号的「法名第N条」。
+
+    在全角数字/繁体「條」归一化后的副本上抽取（逐字 1:1 替换，
+    span 与原文位置严格一致）；繁体法名本身不做简繁转换，抽得出、
+    定位不到时由核验环节如实报「未检索到」，不静默漏检。
+    """
+    src = _fw_norm(text or "").replace("條", "条")
     out = []
-    for m in _CITATION_RE.finditer(text or ""):
+    spans = []
+    for m in _CITATION_RE.finditer(src):
         try:
             num = cn_to_int(m.group(2))
             sub = cn_to_int(m.group(3)) if m.group(3) else None
@@ -812,6 +881,27 @@ def extract_citations(text):
                     "article_sub": sub,
                     "article": article_heading(num, sub),
                     "span": [m.start(), m.end()]})
+        spans.append((m.start(), m.end()))
+    for m in _BARE_CITATION_RE.finditer(src):
+        name = m.group(1).strip()
+        # 句中连词粘连（如「…条和公司法第十六条」的「和公司法」）：
+        # 法名不会以「和」开头，剥掉首字再用
+        if name.startswith("和") and len(name) > 3:
+            name = name[1:]
+        if name in _BARE_SELF_REFS or name.startswith(("本", "该", "此")):
+            continue
+        if any(s <= m.start() < e or s < m.end() <= e for s, e in spans):
+            continue  # 与书名号引注重叠，已由主模式抽出
+        try:
+            num = cn_to_int(m.group(2))
+            sub = cn_to_int(m.group(3)) if m.group(3) else None
+        except ValueError:
+            continue
+        out.append({"law": name, "article_num": num,
+                    "article_sub": sub,
+                    "article": article_heading(num, sub),
+                    "span": [m.start(), m.end()]})
+    out.sort(key=lambda c: c["span"][0])
     return out
 
 
@@ -905,10 +995,23 @@ def tool_flk_search(args):
              for lib, err in failures.items()]
     if source in ("auto", "moj") and "moj" not in failures \
             and scope == "title":
-        notes.append("司法部行政法规库的服务端检索过滤当前未生效"
-                     "（2026-11-23 实测），moj 结果仅含其返回页内标题"
-                     "包含检索词的条目、覆盖不全；该库详情通道可用，"
-                     "verify/get_article 的 moj 兜底只对精确命中生效")
+        idx = _moj_index()
+        if idx["items"]:
+            notes.append(
+                f"司法部行政法规库的标题检索由本地标题索引接管"
+                f"（覆盖 {len(idx['items'])} 部，构建于 "
+                f"{idx['built_at']}）：该库服务端检索过滤未生效，"
+                "索引保证标题覆盖全库；效力与原文仍以详情页实时"
+                "取数为准")
+            stale = _moj_index_stale_note()
+            if stale:
+                notes.append(stale)
+        else:
+            notes.append("司法部行政法规库的服务端检索过滤当前未生效"
+                         "（2026-11-23 实测），且本地标题索引缺失，"
+                         "moj 结果仅含其返回页内标题包含检索词的条目、"
+                         "覆盖不全；该库详情通道可用，"
+                         "verify/get_article 的 moj 兜底只对精确命中生效")
     return {
         "schema": RESULT_SCHEMA,
         "tool": "flk_search",
@@ -972,6 +1075,129 @@ def fetch_official_article(law, num, sub, cache=None):
 
 
 # ---------------------------------------------------------------------------
+# 条号沿革（renumber）建议（859 新增）：条号在现行版找不到时，
+# 若旧版本里有此条，按旧条原文在现行版全文里找内容最接近的条，
+# 给出「可能已改到第X条」的线索。相似度不够高就不臆测、返回 None。
+# ---------------------------------------------------------------------------
+
+_RENUMBER_MIN_SIMILARITY = 0.55
+
+
+def _match_renumber(old_text, cur_paragraphs, num, sub):
+    old_norm = _normalize_for_compare(old_text)
+    if not old_norm:
+        return None
+    best = None
+    for a in split_articles(cur_paragraphs):
+        if a["num"] == num and (a["sub"] or None) == sub:
+            continue
+        ratio = difflib.SequenceMatcher(
+            None, old_norm, _normalize_for_compare(a["text"])).ratio()
+        if best is None or ratio > best[0]:
+            best = (ratio, a)
+    if best and best[0] >= _RENUMBER_MIN_SIMILARITY:
+        return {"suggested_article": best[1]["heading"],
+                "similarity": round(best[0], 3)}
+    return None
+
+
+def _renumber_suggestion_flk(law, num, sub, cache=None):
+    try:
+        details = fetch_law_details(law["id"])
+    except SourceError:
+        return None
+    versions = [v for v in (details.get("lsyg") or [])
+                if isinstance(v, dict) and v.get("bbbs")
+                and v.get("bbbs") != law["id"]]
+    versions.sort(key=lambda v: v.get("gbrq") or "", reverse=True)
+    if not versions:
+        return None
+    try:
+        cur_paras = _docx_paragraphs_cached(law["id"], cache)
+    except SourceError:
+        return None
+    for v in versions[:2]:
+        try:
+            paras = _docx_paragraphs_cached(v["bbbs"], cache)
+        except SourceError:
+            continue
+        found = extract_article(paras, num, sub)
+        if not found:
+            continue
+        hit = _match_renumber(found["text"], cur_paras, num, sub)
+        if hit is None:
+            return None
+        return {"from_version_title": clean_title(v.get("title")),
+                "from_promulgated": v.get("gbrq") or "",
+                "old_article": article_heading(num, sub), **hit}
+    return None
+
+
+def _low_sim_hedge(sug):
+    """低相似度时的加重提醒（860）：阈值采样显示相似度 <0.75 的
+    建议里混有「原条文已被删除、只是与某条现行条文貌似」的情况，
+    建议口径必须随相似度收紧，不能一律说「很可能已调整」。"""
+    if sug.get("similarity", 1) < 0.75:
+        return ("；但相似度偏低，也存在原条文已被删除、并无对应"
+                "现行条文的可能，请勿直接改引")
+    return ""
+
+
+def _renumber_note(sug):
+    return (f"条号沿革提示：{sug['old_article']}见于旧版本"
+            f"《{sug['from_version_title']}》"
+            + (f"（{sug['from_promulgated']}公布）"
+               if sug.get("from_promulgated") else "")
+            + f"，其内容与现行文本{sug['suggested_article']}最接近"
+              f"（相似度 {sug['similarity']}）——条号很可能已随修订"
+              f"调整，引用时请改按现行条号{sug['suggested_article']}"
+              "并逐字复核。" + _low_sim_hedge(sug))
+
+
+def _relocated_suggestion(law_id, quoted_text, num, sub, cache=None):
+    """内容去向提示（859）：条号还在、但所引文字与现行该条差异极大
+    时，在现行全文里找与所引文字最接近的条——旧条文多半是随修订
+    搬了家。相似度不够高不臆测。"""
+    try:
+        paras = _docx_paragraphs_cached(law_id, cache)
+    except SourceError:
+        return None
+    hit = _match_renumber(quoted_text, paras, num, sub)
+    if hit is None:
+        return None
+    return {"quoted_matches_current": hit["suggested_article"],
+            "similarity": hit["similarity"]}
+
+
+def _relocated_note(heading, sug):
+    return (f"内容去向提示：所引文字与现行{heading}差异极大，但与现行"
+            f"文本{sug['quoted_matches_current']}最接近"
+            f"（相似度 {sug['similarity']}）——这段文字很可能已随修订"
+            f"调整到{sug['quoted_matches_current']}，请改按现行条号引用"
+            "并逐字复核。"
+            + _low_sim_hedge({"similarity": sug["similarity"]}))
+
+
+def _renumber_suggestion_moj(detail, num, sub):
+    """moj 通道同款沿革建议：沿革版本走 moj 详情页全文比对。"""
+    for h in (detail.get("history") or [])[:2]:
+        try:
+            old = moj_fetch_detail(h["id"])
+        except SourceError:
+            continue
+        found = extract_article(old["paragraphs"], num, sub)
+        if not found:
+            continue
+        hit = _match_renumber(found["text"], detail["paragraphs"],
+                              num, sub)
+        if hit is None:
+            return None
+        return {"from_version_title": h["title"], "from_promulgated": "",
+                "old_article": article_heading(num, sub), **hit}
+    return None
+
+
+# ---------------------------------------------------------------------------
 # 三库分工（857 补齐）：司法部行政法规库（moj）＋国家规章库（gzk）
 #
 # 分工口径（DESIGN_836）：flk 管法律/行政法规/司法解释的主干核验；
@@ -1002,6 +1228,80 @@ _GZK_PUBLIC_KEY_B64 = (
 
 _MOJ_STATUS_MAP = {"现行有效": 3, "已废止": 1, "已修改": 2,
                    "尚未生效": 4, "部分失效": 2}
+
+# --- moj 标题索引（859 新增）：moj 检索端点的 Query 不生效、恒返
+# 第一页，857 的兜底只能命中约 10 部。实测同一端点接受 PageIndex
+# 分页，全库可遍历——tools/build_moj_index.py 离线抓成
+# data/moj_index.json（标题→LawID 电话簿），标题检索与精确定位
+# 改走索引，效力与原文仍以详情页实时取数为准。 ---
+_MOJ_INDEX_CACHE = None
+
+
+def _moj_index_path():
+    env = os.environ.get("CN_LAW_VERIFY_MOJ_INDEX")
+    if env:
+        return env
+    return os.path.join(os.path.dirname(snapshot_db_path()),
+                        "moj_index.json")
+
+
+def _moj_index():
+    """读标题索引 → {"items": [...], "built_at": str|None}；无索引返回空。"""
+    global _MOJ_INDEX_CACHE
+    if _MOJ_INDEX_CACHE is not None:
+        return _MOJ_INDEX_CACHE
+    data = {"items": [], "built_at": None}
+    try:
+        with open(_moj_index_path(), encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+            data = {
+                "items": [i for i in raw["items"]
+                          if isinstance(i, dict) and i.get("id")
+                          and i.get("title")],
+                "built_at": raw.get("built_at"),
+            }
+    except (OSError, ValueError):
+        pass
+    _MOJ_INDEX_CACHE = data
+    return data
+
+
+def _moj_index_items():
+    return _moj_index()["items"]
+
+
+# moj 标题索引新鲜度口径（860 新增）：索引是离线遍历的一次性
+# 快照，新增/修订的行政法规不会自动进索引。此前 server 只在索引
+# 缺失时出提示，索引过期时无声无息——超过阈值未重建时，检索结果
+# 与健康检查都必须把「索引已旧」摆到明面上。
+_MOJ_INDEX_STALE_DAYS = 30
+
+
+def _moj_index_age_days():
+    """索引构建距今的天数（浮点）；无索引或时间不可解析返回 None。"""
+    built_at = _moj_index().get("built_at")
+    if not built_at:
+        return None
+    try:
+        built = datetime.fromisoformat(str(built_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if built.tzinfo is None:
+        built = built.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - built).total_seconds() / 86400.0
+
+
+def _moj_index_stale_note():
+    """索引过期时的统一提示文案；未过期返回空串。"""
+    age = _moj_index_age_days()
+    if age is None or age <= _MOJ_INDEX_STALE_DAYS:
+        return ""
+    return (f"注意：本地标题索引已构建 {age:.0f} 天（超过 "
+            f"{_MOJ_INDEX_STALE_DAYS} 天未重建），其间新公布或修订的"
+            "行政法规可能不在索引内、标题检索会漏检；索引重建："
+            "python3 tools/build_moj_index.py（离线遍历司法部库分页，"
+            "串行礼貌抓取，约数分钟）")
 
 
 def _wrap_alt_source_error(label, site_url, e):
@@ -1087,12 +1387,37 @@ def _moj_parse_list(html_text):
 def moj_search_rows(query, mode="title", limit=10):
     """司法部行政法规库检索 → (total, items)。
 
-    走站点自身的主检索路径（SearchTitleFront/SearchFront）。
+    title 模式优先走本地标题索引（859）：覆盖全库、精确在前；
+    索引缺失时回退站点检索路径。content 模式仍走站点路径。
     实测警示（2026-11-23）：moj 三个检索端点当前均不按 Query 过滤，
-    恒返回全库按日期升序的第一页——服务端过滤已失效。故 title 模式
-    在本地按「标题包含检索词」二次过滤，绝不把未过滤的全库列表
-    冒充检索结果；content 模式无法本地过滤，结果须人工复核。
+    恒返回全库按日期升序的第一页——服务端过滤已失效。故回退路径的
+    title 模式在本地按「标题包含检索词」二次过滤，绝不把未过滤的
+    全库列表冒充检索结果；content 模式无法本地过滤，结果须人工复核。
     """
+    if mode == "title":
+        idx = _moj_index_items()
+        if idx:
+            def _dedupe(rows):
+                best = {}
+                for r in rows:
+                    cur = best.get(r["title"])
+                    if cur is None or int(r["id"]) > int(cur["id"]):
+                        best[r["title"]] = r
+                return list(best.values())
+
+            exact = _dedupe([i for i in idx if i["title"] == query])
+            contains = _dedupe([i for i in idx
+                                 if query in i["title"]
+                                 and i["title"] != query])
+            merged = exact + contains
+            out = [{
+                "id": i["id"], "title": i["title"],
+                "status": i.get("status", ""),
+                "promulgated": i.get("promulgated", ""),
+                "source_url": f"{MOJ_BASE}/front/law/detail?LawID={i['id']}",
+                "library": "moj",
+            } for i in merged]
+            return len(out), out[:limit]
     endpoint = "SearchTitleFront" if mode == "title" else "SearchFront"
     params = {"SiteID": "122", "Query": query,
               "Type": "1" if mode == "title" else "2"}
@@ -1224,10 +1549,31 @@ def _moj_stamp():
 
 
 def moj_find_law(name):
-    """在司法部行政法规库按标题精确定位 → detail 或 None。"""
+    """在司法部行政法规库按标题精确定位 → detail 或 None。
+
+    有标题索引时按索引精确命中（同名多版本逐个取详情、优先现行
+    有效版，与 flk find_law 同口径）；索引里没有即真没有，不再回
+    退到只覆盖第一页的服务端检索。索引缺失时走旧检索路径。
+    """
     name = (name or "").strip().strip("《》").strip()
     if not name:
         return None
+    idx = _moj_index_items()
+    if idx:
+        cands = [i for i in idx if i["title"] == name]
+        cands.sort(key=lambda i: int(i["id"]), reverse=True)
+        fallback = None
+        for item in cands[:3]:
+            detail = moj_fetch_detail(
+                item["id"], fallback_status=item.get("status", ""))
+            if fallback is None:
+                fallback = detail
+            if detail["status_code"] == 3:
+                return detail
+            if fallback["status_code"] == 1 \
+                    and detail["status_code"] != 1:
+                fallback = detail
+        return fallback
     _total, items = moj_search_rows(name, mode="title", limit=10)
     exact = [i for i in items if i["title"] == name]
     if not exact:
@@ -1288,6 +1634,49 @@ def _gzk_app_key_header():
         safe="")
 
 
+# 中央国家机关名录（国务院组成部门/直属机构/部委管理的国家局等，
+# 名录公开固定）：这些机关发布的规章就是部门规章。860 采样实测：
+# 旧版只认「X令」令号字样，未判定样本 40/40 的发布机关都是中央
+# 机关、机关字段本身俱全——是规则没用上字段，不是数据缺字段。
+_GZK_CENTRAL_AUTHORITIES = frozenset({
+    "外交部", "国防部", "国家发展和改革委员会", "教育部", "科学技术部",
+    "工业和信息化部", "国家民族事务委员会", "公安部", "国家安全部",
+    "民政部", "司法部", "财政部", "人力资源和社会保障部", "自然资源部",
+    "生态环境部", "住房和城乡建设部", "交通运输部", "水利部",
+    "农业农村部", "商务部", "文化和旅游部", "国家卫生健康委员会",
+    "退役军人事务部", "应急管理部", "中国人民银行", "审计署",
+    "国务院国有资产监督管理委员会", "海关总署", "国家税务总局",
+    "国家市场监督管理总局", "国家金融监督管理总局", "中国证券监督管理委员会",
+    "国家广播电视总局", "国家体育总局", "国家信访局", "国家统计局",
+    "国家知识产权局", "国家国际发展合作署", "国家医疗保障局",
+    "国务院参事室", "国家机关事务管理局", "国家认证认可监督管理委员会",
+    "国家标准化管理委员会", "国家新闻出版署", "国家版权局",
+    "国家宗教事务局", "国务院研究室", "国务院侨务办公室",
+    "国务院港澳事务办公室", "国务院台湾事务办公室", "国家互联网信息办公室",
+    "国家粮食和物资储备局", "国家能源局", "国家国防科技工业局",
+    "国家烟草专卖局", "国家移民管理局", "国家林业和草原局",
+    "国家铁路局", "中国民用航空局", "国家邮政局", "国家文物局",
+    "国家中医药管理局", "国家疾病预防控制局", "国家矿山安全监察局",
+    "国家消防救援局", "国家外汇管理局", "国家药品监督管理局",
+    "中国银行保险监督管理委员会", "国家密码管理局", "国家保密局",
+    "国家档案局", "国家公园管理局", "国务院办公厅", "国家数据局",
+    "国家反垄断局", "全国人大常委会法制工作委员会",
+})
+# 地方前缀守卫：机关名以省/市/自治区等地名开头的是地方机关，
+# 不许被中央后缀规则误吞（如「北京市教育委员会」）。
+_GZK_PLACE_PREFIXES = (
+    "北京", "天津", "上海", "重庆", "河北", "山西", "辽宁", "吉林",
+    "黑龙江", "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南",
+    "湖北", "湖南", "广东", "海南", "四川", "贵州", "云南", "陕西",
+    "甘肃", "青海", "台湾", "内蒙古", "广西", "西藏", "宁夏", "新疆",
+    "香港", "澳门", "深圳", "广州", "南京", "杭州", "成都", "武汉",
+    "西安", "厦门", "青岛", "大连", "宁波", "苏州", "长沙", "郑州",
+    "济南", "沈阳", "哈尔滨", "长春", "昆明", "福州", "合肥", "南昌",
+    "贵阳", "南宁", "海口", "兰州", "银川", "西宁", "乌鲁木齐",
+    "呼和浩特", "拉萨", "石家庄", "太原", "无锡", "东莞", "佛山",
+)
+
+
 def _gzk_infer_level(authority, title, source=""):
     """规章层级推断（官方库无此字段）：结果恒标 inferred。"""
     text = " ".join([authority or "", title or "", source or ""])
@@ -1296,6 +1685,18 @@ def _gzk_infer_level(authority, title, source=""):
     dept = ("部令", "总局令", "委员会令", "署令", "局令", "中国人民银行令")
     if any(k in text for k in dept) or re.search(r"(部|总局|委员会|署|行|局)令", text):
         return "部门规章"
+    # 860 放宽：发布机关本身是中央国家机关 → 部门规章。国家规章库
+    # 只收部门规章与地方政府规章两类，非人民政府发布的规章若出自
+    # 中央机关，别无其他可能；机关名带地方前缀的先排除。
+    auth = (authority or "").strip()
+    if auth:
+        first = re.split(r"[、，,；;／/\s]+", auth)[0].strip()
+        if first in _GZK_CENTRAL_AUTHORITIES:
+            return "部门规章"
+        if not first.startswith(_GZK_PLACE_PREFIXES) and \
+                re.search(r"(部|委员会|总局|总署|署|银行|办公厅|办公室)$",
+                          first):
+            return "部门规章"
     return "规章（层级未判定）"
 
 
@@ -1418,9 +1819,14 @@ def _verify_against_moj(detail, law_name, article_in, citation_text,
                 "detail": f"在《{detail['title']}》现行文本中未找到{heading}"
                           "（条号可能不存在、已漂移，或该条已在修订中调整）",
             })
-            notes.append("若条号来自该法的旧版本文本：法规修订后条号可能"
-                         "已经变更（renumber），可用 get_law 查看版本沿革，"
-                         "再按现行文本的条号重新定位引用。")
+            sug = _renumber_suggestion_moj(detail, num, sub)
+            if sug:
+                article_check["renumber_suggestion"] = sug
+                notes.append(_renumber_note(sug))
+            else:
+                notes.append("若条号来自该法的旧版本文本：法规修订后条号可能"
+                             "已经变更（renumber），可用 get_law 查看版本沿革，"
+                             "再按现行文本的条号重新定位引用。")
         else:
             official_text = found["text"]
             article_check.update({
@@ -1453,6 +1859,17 @@ def _verify_against_moj(detail, law_name, article_in, citation_text,
                                                           len(official))
                     text_check["detail"] = ("引文与官方原文不逐字一致，"
                                             "差异见 first_diff_at 附近")
+                    if ratio < 0.3:
+                        hit = _match_renumber(citation_text,
+                                              detail["paragraphs"],
+                                              num, sub)
+                        if hit:
+                            rsug = {
+                                "quoted_matches_current":
+                                    hit["suggested_article"],
+                                "similarity": hit["similarity"]}
+                            text_check["relocated_suggestion"] = rsug
+                            notes.append(_relocated_note(heading, rsug))
                 else:
                     text_check["detail"] = "引文与官方原文逐字一致"
                 checks["text"] = text_check
@@ -1592,6 +2009,11 @@ def _get_article_via_moj(law_name, num, sub, heading):
         return None
     found = extract_article(detail["paragraphs"], num, sub)
     if found is None:
+        sug = _renumber_suggestion_moj(detail, num, sub)
+        if sug:
+            raise SourceError(
+                f"司法部行政法规库收录了《{detail['title']}》，但其中未"
+                f"找到{heading}。" + _renumber_note(sug))
         raise SourceError(
             f"司法部行政法规库收录了《{detail['title']}》，但其中未找到"
             f"{heading}（条号可能不存在或已漂移；若条号来自旧版本，"
@@ -1632,7 +2054,8 @@ def _verify_citation_live(args, _cache=None, _excerpt_ok=False):
             f"参数 article 类型不对：需要文本或整数，收到的是"
             f"{_type_zh(article_in)}。下一步：请把条号写成如"
             "「第五百七十七条」或 577 再发。")
-    citation_text = args.get("citation_text") or args.get("text")
+    citation_text = (args.get("citation_text") or args.get("text")
+                     or args.get("quoted_text"))
     if citation_text is not None and not isinstance(citation_text, str):
         raise SourceError(
             f"参数 citation_text 类型不对：需要文本，收到的是"
@@ -1681,6 +2104,13 @@ def _verify_citation_live(args, _cache=None, _excerpt_ok=False):
     }
 
     notes = []
+    name_warn = law.get("name_mismatch")
+    if name_warn:
+        notes.append(
+            f"法名不完全一致：所给法名「{law_name}」比定位到的法规"
+            f"《{law['title']}》多出「{name_warn}」，可能实际指向另一部"
+            "同名衍生法规；本次结论只针对定位到的法规，总判定已降级，"
+            "引用前请先确认法规本身无误。")
     article_result = None
     if article_in is not None and str(article_in).strip() != "":
         num, sub = normalize_article(article_in)
@@ -1698,9 +2128,14 @@ def _verify_citation_live(args, _cache=None, _excerpt_ok=False):
                 "detail": f"在《{law['title']}》现行文本中未找到{heading}"
                           "（条号可能不存在、已漂移，或该条已在修订中调整）",
             })
-            notes.append("若条号来自该法的旧版本文本：法规修订后条号可能"
-                         "已经变更（renumber），可用 get_law 查看版本沿革，"
-                         "再按现行文本的条号重新定位引用。")
+            sug = _renumber_suggestion_flk(law, num, sub, cache=_cache)
+            if sug:
+                article_check["renumber_suggestion"] = sug
+                notes.append(_renumber_note(sug))
+            else:
+                notes.append("若条号来自该法的旧版本文本：法规修订后条号可能"
+                             "已经变更（renumber），可用 get_law 查看版本沿革，"
+                             "再按现行文本的条号重新定位引用。")
         else:
             article_check.update({
                 "ok": True,
@@ -1734,6 +2169,15 @@ def _verify_citation_live(args, _cache=None, _excerpt_ok=False):
                     else:
                         text_check["first_diff_at"] = min(len(given), len(official))
                     text_check["detail"] = "引文与官方原文不逐字一致，差异见 first_diff_at 附近"
+                    if ratio < 0.3:
+                        # 差异极大不像笔误，更像条文已随修订搬家：
+                        # 在现行全文里指出所引文字的实际去向（859）
+                        rsug = _relocated_suggestion(
+                            law["id"], citation_text, num, sub,
+                            cache=_cache)
+                        if rsug:
+                            text_check["relocated_suggestion"] = rsug
+                            notes.append(_relocated_note(heading, rsug))
                 else:
                     text_check["detail"] = "引文与官方原文逐字一致"
                 checks["text"] = text_check
@@ -1745,7 +2189,7 @@ def _verify_citation_live(args, _cache=None, _excerpt_ok=False):
                  or law["status_code"] in (1, 4)
                  or (article_result is not None and not article_result.get("ok"))
                  or (checks.get("text") is not None and not checks["text"]["ok"]))
-    degraded = (status_warn
+    degraded = (status_warn or bool(name_warn)
                 or (article_result is not None
                     and article_result.get("text_source") == "official_context_window"))
     if hard_fail:
@@ -1799,6 +2243,12 @@ def _verify_citation_snapshot(law_name, article_in, citation_text,
             "不得作为现行有效依据引用"),
     }
     notes = []
+    if law.get("name_mismatch"):
+        notes.append(
+            f"法名不完全一致：所给法名「{law_name}」比快照定位到的法规"
+            f"《{law['title']}》多出「{law['name_mismatch']}」，可能实际"
+            "指向另一部同名衍生法规；本次结论只针对定位到的法规，"
+            "总判定已降级，引用前请先确认法规本身无误。")
     article_result = None
     if article_in is not None and str(article_in).strip() != "":
         num, sub = normalize_article(article_in)
@@ -1859,9 +2309,9 @@ def _verify_citation_snapshot(law_name, article_in, citation_text,
                      and not checks["text"]["ok"]))
     if hard_fail:
         verdict, verdict_zh = "not_verified", "未通过核验"
-    elif status_warn:
+    elif status_warn or law.get("name_mismatch"):
         verdict, verdict_zh = "exists_only", \
-            "仅确认存在（效力存在保留，见 checks）"
+            "仅确认存在（效力或法名存在保留，见 checks）"
     else:
         verdict, verdict_zh = "verified", "已核验（存在性＋原文＋效力）"
     return {
@@ -1893,7 +2343,8 @@ def tool_verify_citation(args, _cache=None, _excerpt_ok=False):
         law_name = (args.get("law") or "").strip() \
             if isinstance(args.get("law"), str) else ""
         article_in = args.get("article")
-        citation_text = args.get("citation_text") or args.get("text")
+        citation_text = (args.get("citation_text") or args.get("text")
+                         or args.get("quoted_text"))
         snap = None
         if law_name:
             try:
@@ -1969,26 +2420,45 @@ def _snapshot_law_dict(row):
     }
 
 
+def _like_escape(term):
+    return (term.replace("\\", "\\\\").replace("%", "\\%")
+            .replace("_", "\\_"))
+
+
 def snapshot_find_law(name):
-    """在快照库中按法名定位（精确 → 简称包含，同名优先现行有效版）。"""
+    """在快照库中按法名定位（精确 → 简称包含，同名优先现行有效版）。
+
+    859 性能修复：候选过滤下推 SQL（857 版每次全表载入 laws 在
+    Python 里逐行比对，快照涨到千部级后纯属浪费）。
+    """
     conn = _open_snapshot()
     if conn is None:
         return None
-    try:
-        rows = conn.execute("SELECT * FROM laws").fetchall()
-    finally:
-        conn.close()
     name = (name or "").strip().strip("《》").strip()
     if not name:
+        conn.close()
         return None
-    exact = [r for r in rows if r["title"] == name]
-    pool = exact or [r for r in rows
-                     if name in r["title"] or r["title"] in name]
-    if not pool:
+    try:
+        rows = conn.execute("SELECT * FROM laws WHERE title = ?",
+                            (name,)).fetchall()
+        exact = bool(rows)
+        if not rows:
+            rows = conn.execute(
+                "SELECT * FROM laws WHERE title LIKE ? ESCAPE '\\' "
+                "OR instr(?, title) > 0",
+                ("%" + _like_escape(name) + "%", name)).fetchall()
+    finally:
+        conn.close()
+    if not rows:
         return None
-    pool.sort(key=lambda r: (_STATUS_PREFERENCE.get(r["status_code"], 9),
+    rows.sort(key=lambda r: (_STATUS_PREFERENCE.get(r["status_code"], 9),
                              abs(len(r["title"]) - len(name))))
-    return _snapshot_law_dict(pool[0])
+    chosen = _snapshot_law_dict(rows[0])
+    if not exact:
+        rest = _name_mismatch_rest(name, chosen["title"])
+        if rest:
+            chosen["name_mismatch"] = rest
+    return chosen
 
 
 def snapshot_get_article(bbbs, num, sub=None):
@@ -2006,15 +2476,23 @@ def snapshot_get_article(bbbs, num, sub=None):
 
 
 def snapshot_search(terms, limit=10):
-    """快照库条文检索：同一条文须同时含全部关键词（AND），按命中次数排序。"""
+    """快照库条文检索：同一条文须同时含全部关键词（AND），按命中次数排序。
+
+    859 性能修复：关键词过滤下推 SQL LIKE（857 版把全部条文载入
+    Python 逐条做子串扫描，165k 条规模下单次 3–6 秒；下推后只把
+    命中行取回打分）。关键词中的 %/_ 按字面量转义，不当通配符。
+    """
     conn = _open_snapshot()
     if conn is None:
         return None
+    where = " AND ".join("a.text LIKE ? ESCAPE '\\'" for _ in terms)
+    params = ["%" + _like_escape(t) + "%" for t in terms]
     try:
         rows = conn.execute(
             "SELECT a.bbbs, a.num, a.sub, a.heading, a.text, "
             "l.title, l.status_code FROM articles a "
-            "JOIN laws l ON l.bbbs = a.bbbs").fetchall()
+            f"JOIN laws l ON l.bbbs = a.bbbs WHERE {where}",
+            params).fetchall()
     finally:
         conn.close()
     hits = []
@@ -2090,9 +2568,17 @@ def tool_get_law(args):
         # 个别法规的官方目录树只到章/节层级、不含条级节点；
         # 快照收录了该法时以快照切条数为准并注明，否则如实置空。
         snap_law = snapshot_find_law(clean_title(details.get("title")))
-        if snap_law is not None:
+        if snap_law is not None and not snap_law.get("name_mismatch"):
             article_count = snap_law["article_count"]
             count_note = "官方目录树未细化到条，条数取自本地快照切条计数"
+        elif snap_law is not None:
+            # 860 修复：快照只按包含关系定位到名称相近的另一部法
+            # （如法律解释的标题里含被解释法律的法名）时，那部法的
+            # 条数与本法无关——旧版照单全收，曾把《刑法》的 505 条
+            # 记到其法律解释名下。名称不完全一致就不借用条数。
+            article_count = None
+            count_note = ("官方目录树未细化到条；本地快照未收录该法"
+                          "（仅有名称相近的其他法规），条数未能统计")
         else:
             article_count = None
             count_note = "官方目录树未细化到条，条数未能从目录统计"
@@ -2176,6 +2662,12 @@ def tool_get_article(args):
             info = snapshot_info()
             snap_notes = ["原文取自本地快照库（官方 DOCX 全文切条），"
                           "效力状态以快照构建时官方标注为准"]
+            if snap_law.get("name_mismatch"):
+                snap_notes.append(
+                    f"法名不完全一致：所给法名比定位到的法规多出"
+                    f"「{snap_law['name_mismatch']}」，可能实际指向另一部"
+                    "同名衍生法规；以下原文属于定位到的法规，引用前"
+                    "请先确认法规本身无误。")
             if snap_law["status_code"] == 4:
                 snap_notes.append("注意：该法规尚未生效（快照构建时官方"
                                   "标注），不得作为现行有效依据引用")
@@ -2219,6 +2711,11 @@ def tool_get_article(args):
     text, text_source, fetch_notes = fetch_official_article(law, num, sub)
     notes.extend(fetch_notes)
     if text is None:
+        sug = _renumber_suggestion_flk(law, num, sub)
+        if sug:
+            raise SourceError(
+                f"在《{law['title']}》现行文本中未找到{heading}。"
+                + _renumber_note(sug))
         raise SourceError(f"在《{law['title']}》现行文本中未找到{heading}"
                           "（条号可能不存在或已漂移；若条号来自旧版本，"
                           "修订后条号可能已变更，可用 get_law 查看版本"
@@ -2336,25 +2833,77 @@ _QUOTE_PAIRS = {'"': '"', "“": "”", "「": "」", "『": "』",
 _QUOTE_STOP_CHARS = "。；！？\n"
 
 
+# 引文抽取上限：错配的引号对会把大段无关文本吞成「引文」（859
+# 实测 1003 字）。2500 字覆盖绝大多数整条引文；残余的短错配靠
+# 比对环节包含率兜底，后果方向是保守的未通过，不会误报通过。
+_MAX_QUOTED_LEN = 2500
+
+
 def _extract_following_quote(text, pos, max_scan=48):
     """抽取引注后紧跟的引号内引文（如：第N条规定：「……」）。
 
     在引注匹配结束后的 max_scan 字内找第一组引号；中途遇到句末标点
     或下一处《法名》引注即停。引文过短（<6 字）不作为比对对象。
     找不到返回 None（该条只做存在性＋效力核验，结论中如实注明）。
+    859 加固：闭引号搜索设上限——超过 _MAX_QUOTED_LEN 字、或中途
+    已经出现下一处引注的，视为引号不配对，不把大半篇文章吞作
+    「引文」去比对（857 版无上限，曾吞入 1000+ 字无关文本）。
     """
     seg = text[pos:pos + max_scan]
     for i, ch in enumerate(seg):
         if ch in _QUOTE_PAIRS:
             close = _QUOTE_PAIRS[ch]
-            end = text.find(close, pos + i + 1)
+            end = text.find(close, pos + i + 1,
+                            pos + i + 1 + _MAX_QUOTED_LEN)
             if end == -1:
+                return None
+            if _CITATION_RE.search(text, pos + i + 1, end):
                 return None
             quoted = text[pos + i + 1:end].strip()
             return quoted if len(quoted) >= 6 else None
         if ch in _QUOTE_STOP_CHARS or ch == "《":
             return None
     return None
+
+
+_CLOSE_TO_OPEN = {v: k for k, v in _QUOTE_PAIRS.items()}
+
+
+def _extract_preceding_quote(text, pos, claimed=()):
+    """抽取引注之前紧邻的引号引文（860 新增）：「条文原文」——
+    《X法》第N条、先引后注是中文法律文书的常见行文，859 版只认
+    引注后引文，这类整段漏比对（860 采样 6 例全漏）。
+
+    约束（防误关联）：引文闭引号与引注之间隔 ≤48 字且不跨句末
+    标点；引文内不含其他引注；不与已被后置抽取认领的引文重叠；
+    引号错配/嵌套不臆测。关联错了后果也只是逐字比对不过（保守
+    方向），不会误报通过。
+    """
+    start = max(0, pos - 48)
+    close_idx, close_ch = -1, None
+    for i in range(pos - 1, start - 1, -1):
+        ch = text[i]
+        if ch in _QUOTE_STOP_CHARS:
+            return None
+        if ch in _CLOSE_TO_OPEN:
+            close_idx, close_ch = i, ch
+            break
+    if close_idx < 0:
+        return None
+    open_ch = _CLOSE_TO_OPEN[close_ch]
+    open_idx = text.rfind(open_ch, max(0, close_idx - _MAX_QUOTED_LEN),
+                          close_idx)
+    if open_idx < 0:
+        return None
+    inner = text[open_idx + 1:close_idx]
+    if close_ch in inner:
+        return None
+    if _CITATION_RE.search(inner) or _BARE_CITATION_RE.search(inner):
+        return None
+    if any(open_idx < e and close_idx >= s for s, e in claimed):
+        return None
+    quoted = inner.strip()
+    return quoted if len(quoted) >= 6 else None
 
 
 def tool_check_citations_in_text(args):
@@ -2364,12 +2913,35 @@ def tool_check_citations_in_text(args):
         raise SourceError("text 不能为空。下一步：请把待核验的整段文本"
                           "粘贴进来再发。")
     found = extract_citations(text)
+    # 去重键必须含引文（859 修复）：同一条被引两次、引文一真一假时，
+    # 857 版按（法名，条号）去重只检第一处，伪造的第二处引文会被
+    # 静默放行——整段核验的汇总结论随之失真。
     seen, unique = set(), []
+    claimed = []
     for c in found:
-        key = (c["law"], c["article_num"], c["article_sub"])
+        quoted = _extract_following_quote(text, c["span"][1])
+        qpos = "after" if quoted else None
+        if quoted:
+            qs = text.find(quoted, c["span"][1],
+                           c["span"][1] + 50 + len(quoted))
+            if qs >= 0:
+                claimed.append((qs, qs + len(quoted)))
+        if not quoted:
+            # 后置没有再试前置（860）：先引后注的行文同样要比对
+            quoted = _extract_preceding_quote(text, c["span"][0],
+                                              claimed)
+            if quoted:
+                qpos = "before"
+                qs = text.rfind(
+                    quoted,
+                    max(0, c["span"][0] - _MAX_QUOTED_LEN - 50),
+                    c["span"][0])
+                if qs >= 0:
+                    claimed.append((qs, qs + len(quoted)))
+        key = (c["law"], c["article_num"], c["article_sub"], quoted or "")
         if key not in seen:
             seen.add(key)
-            unique.append(c)
+            unique.append(dict(c, _quoted=quoted, _qpos=qpos))
     truncated = len(unique) > _MAX_CITATIONS_PER_RUN
     to_check = unique[:_MAX_CITATIONS_PER_RUN]
     cache = {}
@@ -2381,8 +2953,10 @@ def tool_check_citations_in_text(args):
         # 引注后紧跟的引号引文 → 一并做逐字比对（与 verify_citation
         # 同一核验内核，节录模式）；没有引号引文则只验存在与效力，
         # 并在条目里如实注明未做文本比对
-        quoted = _extract_following_quote(text, c["span"][1])
+        quoted = c.get("_quoted")
         entry["quoted_text_found"] = bool(quoted)
+        if quoted:
+            entry["quote_position"] = c.get("_qpos") or "after"
         try:
             vargs = {"law": c["law"], "article": c["article"]}
             if quoted:
@@ -2493,7 +3067,7 @@ def parse_lookup_query(query):
     支持：《民法典》第五百七十七条 / 民法典577条 / 劳动合同法第三十九条
     是什么 / 民诉法第64条。解析不了条号时只回法名（走法规级查询）。
     """
-    q = (query or "").strip()
+    q = _fw_norm((query or "").strip()).replace("條", "条")
     if not q:
         raise SourceError("query 不能为空")
     m = re.search(r"《([^》]{2,60})》", q)
@@ -2599,9 +3173,9 @@ def tool_lookup(args):
 
 _SUPPORT_DISCLAIMER = ("本结论由零依赖词面启发式生成（关键词覆盖、数字一致性、"
                        "否定极性冲突、排他性限定、条件偷换、单位偷换、"
-                       "主体偷换七类信号），只是初筛，不是语义判定，"
-                       "不能替代人工判断；引注是否真正支持论断，"
-                       "请结合条文全文与案件事实人工复核。")
+                       "主体偷换、数量边界方向八类信号），只是初筛，"
+                       "不是语义判定，不能替代人工判断；引注是否真正"
+                       "支持论断，请结合条文全文与案件事实人工复核。")
 
 _NEG_WORDS = ("不得", "不能", "不应", "禁止", "不准", "无需", "无须",
               "不承担", "不予", "不会", "没有", "不发生",
@@ -2611,13 +3185,31 @@ _POS_WORDS = ("应当", "必须", "有权", "可以", "承担", "赔偿", "履�
 # 极性冲突用定向模式：裸字「不」会把引文里描述违约情形的「不履行」
 # 误判成否定表述，故只认「免责表述 × 义务表述」「禁止表述 × 许可表述」
 # 这类贴在义务谓语上的组合。
-_EXEMPTION_RE = re.compile(r"(不承担|无需|无须|不必|免除|可以不|有权拒绝|拒绝承担)")
-_DUTY_RE = re.compile(r"(应当承担|必须承担|承担[^，。；]{0,6}责任|应当赔偿|应当履行)")
+_EXEMPTION_RE = re.compile(r"(不承担|无需|无须|不用|不必|免除|可以不|有权拒绝|拒绝承担)")
+_DUTY_RE = re.compile(r"(应当承担|必须承担|承担[^，。；]{0,6}责任|应当赔偿|应当履行"
+                      r"|应当[^，。；]{0,32}支付赔偿金)")
+
+
+def _claim_exempts(claim):
+    """论断侧的免责判定（859 收紧）：「无需/免除」类词后面 12 字内
+    必须出现责任/赔偿/支付/履行/义务才算免责表述——「无需证明
+    损失」是举证话题不是免责，无范围地匹配会误报极性冲突。"""
+    for m in _EXEMPTION_RE.finditer(claim or ""):
+        if re.search(r"(责任|赔偿|支付|履行|义务)",
+                     claim[m.end():m.end() + 12]):
+            return True
+    return False
 _PROHIBIT_RE = re.compile(r"(不得|禁止|不准)")
 _PERMIT_RE = re.compile(r"(可以|有权)")
 _NUMBER_RE = re.compile(
-    r"([0-9]+(?:\.[0-9]+)?|[零一二三四五六七八九十百千]+)"
+    r"([0-9]+(?:\.[0-9]+)?|[零一二三四五六七八九十百千]+|半)"
     r"\s*(%|％|元|万元|亿元|日|天|个月|月|年|倍|成|分|条|款|项|人|次|级)?")
+# 款项序号（一）（二）…是条文结构编号，不是数量：抽数字前先剔除，
+# 否则引文里的「（三）」会给论断中凭空出现的「三倍」提供假依据（859 实测）。
+_ENUM_MARK_RE = re.compile(r"[（(][一二三四五六七八九十]+[）)]")
+# 「第三人/第一方」是序数称谓不是数量，同理剔除（859 实测：
+# 「第三人代为履行」曾被抽出数字「3人」误报数字冲突）。
+_ORDINAL_PARTY_RE = re.compile(r"第[一二三四五六七八九十]+(人|方|者)")
 
 # 单位归一化与同族判定（857 v2）：「三个月」冒充「三年」这类同值异单位
 # 偷换，v1 只给提示信号；v2 在同族（期限/金额/比例）内视为硬冲突。
@@ -2643,14 +3235,72 @@ _STOP_BIGRAMS = {"的规", "规定", "应当", "可以", "对于", "以及", "�
 
 def _extract_numbers(text):
     out = []
-    for m in _NUMBER_RE.finditer(text or ""):
+    cleaned = _ORDINAL_PARTY_RE.sub(
+        "某方", _ENUM_MARK_RE.sub("", text or ""))
+    for m in _NUMBER_RE.finditer(cleaned):
         raw, unit = m.group(1), m.group(2) or ""
         try:
-            value = float(raw) if raw.replace(".", "").isdigit() \
-                else float(cn_to_int(raw))
+            if raw == "半":
+                value = 0.5
+            elif raw.replace(".", "").isdigit():
+                value = float(raw)
+            else:
+                value = float(cn_to_int(raw))
         except (ValueError, TypeError):
             continue
         out.append((value, unit))
+    return out
+
+
+# 数量边界方向（859 新增）：「三年以上」与「三年以下」数字全同，
+# v2 只比数值会把方向对调判成支持。方向按含本数口径分三档：
+# above=以上/超过/不少于/至少；below=以下/不超过/至多/以内（含本数）；
+# strict=不满/未满（不含本数）。同一数值＋单位上方向不同档即偷换。
+# 方向词位置不固定：「三年以上」在后、「不满三年」「不超过三年」在前，
+# 两侧都要看；「不超过」含「超过」，前缀判定优先于后缀。
+_DIR_PREFIX = (
+    ("strict", re.compile(r"(?:不满|未满)$")),
+    ("below", re.compile(r"(?:不超过|至多)$")),
+    ("above", re.compile(r"(?:至少|不少于)$")),
+)
+_DIR_SUFFIX = (
+    ("below", re.compile(r"^(?:以下|以内)")),
+    ("above", re.compile(r"^(?:以上|超过)")),
+)
+_DIR_ZH = {"above": "以上向", "below": "以下向（含本数）",
+           "strict": "不满向（不含本数）"}
+
+
+def _extract_quantities(text):
+    """抽（数值， 归一单位）→ 方向档集合。"""
+    out: dict[tuple, set] = {}
+    cleaned = _ORDINAL_PARTY_RE.sub(
+        "某方", _ENUM_MARK_RE.sub("", text or ""))
+    for m in _NUMBER_RE.finditer(cleaned):
+        raw, unit = m.group(1), _norm_unit(m.group(2) or "")
+        try:
+            if raw == "半":
+                value = 0.5
+            elif raw.replace(".", "").isdigit():
+                value = float(raw)
+            else:
+                value = float(cn_to_int(raw))
+        except (ValueError, TypeError):
+            continue
+        head = cleaned[max(0, m.start() - 3):m.start()]
+        tail = cleaned[m.end():m.end() + 3]
+        cls = None
+        for name_, pat in _DIR_PREFIX:
+            if pat.search(head):
+                cls = name_
+                break
+        if cls is None:
+            for name_, pat in _DIR_SUFFIX:
+                if pat.search(tail):
+                    cls = name_
+                    break
+        if cls:
+            out.setdefault((value, unit), set()).add(cls)
     return out
 
 
@@ -2672,16 +3322,24 @@ def _has_negation(text):
 # 排他性限定：论断加「只能/唯一/只有…」而引文只是列举或一般规定。
 _EXCLUSIVE_CLAIM_WORDS = ("唯一", "只能", "仅限", "唯有", "只有")
 _EXCLUSIVE_CITE_WORDS = ("唯一", "仅", "只能", "只有", "仅限", "唯有")
+# 引文侧的排他还有「非…不可」句式（859 补）：只认词表会把忠实
+# 转述误判成排他偷换。
+_EXCLUSIVE_CITE_RE = re.compile(r"非[^，。；]{0,10}不(?:可|得|行)")
 # 全称量化：只做降级信号（supports→partial），不单独判不支持。
 _UNIVERSAL_CLAIM_WORDS = ("一律", "任何情况下", "无一例外", "全部都")
 _UNIVERSAL_CITE_WORDS = ("一律", "均", "一切", "任何", "全部")
 # 条件偷换：引文里的强条件标记（「另有规定」类套语太常见、误伤忠实
 # 转述，故意不收）。论断保留了条件痕迹时不触发。
+# 859 分档：强标记（同意/催告/致使不能实现等具体条件）被丢才算偷换；
+# 「除外/除非」是弱标记——长条文几乎必带例外句，单独出现时忠实
+# 转述另一款也会被误伤（859 实测三例误报均出于此），只留信号。
 _CONDITION_CITE_RES = tuple(re.compile(p) for p in (
     r"未经[^，。；]{0,10}", r"经[^，。；]{1,10}同意", r"书面同意",
-    r"协商一致", r"根据[^，。；]{0,8}的请求", r"致使不能",
-    r"不能实现合同目的", r"影响[^，。；]{0,10}实现", r"经催告",
-    r"除外", r"除非"))
+    r"协商一致", r"根据[^，。；]{0,8}的请求", r"致使[^，。；]{0,10}不能",
+    r"不能实现合同目的", r"合同目的不能实现",
+    r"影响[^，。；]{0,10}实现", r"经催告",
+    r"在[^，。；]{1,40}的前提下", r"经[^，。；]{1,10}(?:批准|许可)"))
+_CONDITION_WEAK_RES = tuple(re.compile(p) for p in (r"除外", r"除非"))
 _CONDITION_CLAIM_RES = tuple(re.compile(p) for p in (
     r"根据[^，。；]{0,8}的请求", r"经[^，。；]{1,10}同意"))
 _CONDITION_CLAIM_WORDS = ("除外", "除非", "另有", "未经", "协商一致",
@@ -2700,7 +3358,21 @@ _SUBJECTS = sorted({s for pair in _SUBJECT_PAIRS for s in pair},
                    key=len, reverse=True)
 _MODAL_RE = re.compile(r"(可以|应当|有权|不得|必须|不能|无需|无须)")
 _CONDITION_SPAN_RE = re.compile(r"(?:未经|经)[^，。；]{1,12}同意")
-_BEARER_RE = re.compile(r"由([^，。；]{2,7}?)(承担|负责)")
+_BEARER_RE = re.compile(
+    r"由([^，。；]{2,7}?)(承担|负责|支付|赔偿|履行|返还)")
+_ACTION_VERB_RE = re.compile(
+    r"(" + "|".join(re.escape(s) for s in (
+        "用人单位", "劳动者", "工作人员", "出租人", "承租人", "债权人",
+        "债务人", "出卖人", "买受人", "经营者", "消费者", "贷款人",
+        "借款人", "发包人", "承包人", "投保人", "保险人"))
+    + r")[^，。；、]{0,10}?(解除|终止)")
+_PASSIVE_VERB_RE = re.compile(
+    r"被(" + "|".join(re.escape(s) for s in (
+        "用人单位", "劳动者", "工作人员", "出租人", "承租人", "债权人",
+        "债务人", "出卖人", "买受人", "经营者", "消费者", "贷款人",
+        "借款人", "发包人", "承包人", "投保人", "保险人"))
+    + r")[^，。；、]{0,6}?(解除|终止)")
+_OBJECT_PREPS = ("对", "向", "给", "替")
 
 
 def _actor_bindings(text):
@@ -2708,14 +3380,24 @@ def _actor_bindings(text):
 
     「经X同意/未经X同意」是前置条件而非动作主体，先掩码剔除，
     否则转租类条文会把同意方误当动作方。
+    859 修正三处实测误判源：①「对劳动者造成损害」里的劳动者是
+    宾语不是动作方，紧邻对/向/给/替之后的主体不作绑定候选；
+    ②「应当由X承担」由 BEARER 路径处理，情态路径不再抢先绑出
+    「由用」这类伪动作；③补被动与动词直绑：「被劳动者解除」、
+    「用人单位解除」把解除/终止的实施方绑到动词上，主被动对调
+    才检得出。
     """
     masked = _CONDITION_SPAN_RE.sub("某某", text or "")
     bindings: dict[str, set] = {}
     for m in _MODAL_RE.finditer(masked):
+        if masked[m.end():m.end() + 1] == "由":
+            continue
         before = masked[max(0, m.start() - 40):m.start()]
         actor, best = None, -1
         for subj in _SUBJECTS:
             pos = before.rfind(subj)
+            while pos > 0 and before[pos - 1] in _OBJECT_PREPS:
+                pos = before.rfind(subj, 0, pos)
             if pos > best:
                 actor, best = subj, pos
         if actor:
@@ -2727,7 +3409,11 @@ def _actor_bindings(text):
         bearer = m.group(1)
         for subj in _SUBJECTS:
             if subj in bearer:
-                bindings.setdefault("承担", set()).add(subj)
+                bindings.setdefault(m.group(2)[:2], set()).add(subj)
+    for m in _ACTION_VERB_RE.finditer(masked):
+        bindings.setdefault(m.group(2), set()).add(m.group(1))
+    for m in _PASSIVE_VERB_RE.finditer(masked):
+        bindings.setdefault(m.group(2), set()).add(m.group(1))
     return bindings
 
 
@@ -2762,6 +3448,10 @@ def tool_check_support(args):
                          "text_source": out["text_source"]}
     signals = []
     conflicts = []
+    claim_bigrams = _content_bigrams(claim)
+    cite_bigrams = _content_bigrams(citation_text)
+    coverage = (len(claim_bigrams & cite_bigrams) / len(claim_bigrams)
+                if claim_bigrams else 0.0)
 
     # 信号 1：数字一致性（论断里的具体数字必须在引文中出现）
     claim_nums = [(v, _norm_unit(u)) for v, u in _extract_numbers(claim)]
@@ -2792,17 +3482,119 @@ def tool_check_support(args):
     if missing_nums:
         desc = "、".join(f"{int(v) if v == int(v) else v}{u}"
                          for v, u in missing_nums)
-        conflicts.append(f"论断中的数字 {desc} 未在引文中出现，"
-                         "数字依据可能不存在或张冠李戴")
+        if coverage >= 0.2 or len(missing_nums) >= 2:
+            # 判冲突的门槛：词面有基本重合，或论断一次塞进 ≥2 个
+            # 引文没有的数字（短论断塞两个编造数字是典型造假形态，
+            # 覆盖率会因论断太短而偏低，不能只看覆盖率——859 实测
+            # 两套金标各有一例卡在这条边界的两侧，按此复合门槛分开）
+            conflicts.append(f"论断中的数字 {desc} 未在引文中出现，"
+                             "数字依据可能不存在或张冠李戴")
+        else:
+            # 论断与引文整体几乎无关、且只有一个数字对不上时，
+            # 「数字不在引文中」是弱证据：引文可能根本讲的是另一
+            # 回事，只留信号不判冲突（859）。
+            signals.append(f"数字 {desc} 未在引文中出现，但论断与引文"
+                           "词面重合过低，未判冲突，请人工核对")
+
+    # 信号 1b（859 新增）：数量边界方向偷换——数值全同但以上/以下/
+    # 不满方向被改。引文同值上同时有多个方向（如基本档与加重档并存）
+    # 时不判，避免误伤。
+    claim_q = _extract_quantities(claim)
+    cite_q = _extract_quantities(citation_text)
+    for key, claim_dirs in claim_q.items():
+        cite_dirs = cite_q.get(key)
+        if not cite_dirs or claim_dirs & cite_dirs:
+            continue
+        value, unit = key
+        conflicts.append(
+            f"数量边界方向偷换：数值 {int(value) if value == int(value) else value}"
+            f"{unit} 在引文中是{_DIR_ZH[next(iter(cite_dirs))]}，"
+            f"论断却作{_DIR_ZH[next(iter(claim_dirs))]}，"
+            "以上/以下/不满的含本数口径不同，范围已被改动")
+        break
+
+    # 信号 1f（860 新增）：多档并存时的分档锚定。引文同值多方向
+    # （基本档与加重档并存）时 1b 按设计不触发——但论断若明说了
+    # 适用情形（如「数额较大」），可按情形把论断锚定到对应分句再
+    # 比方向：锚定档与论断方向不符就是「引对条、引错档」。锚定
+    # 要求情形词面重合有明确优势（≥4 且领先次选 ≥2），不够明确
+    # 不判。论断不提情形、只把后续分档的方向当基本档说的，词面
+    # 无法与「只摘述加重档」可靠区分，只留信号请人工核对。
+    for key, claim_dirs in claim_q.items():
+        cite_dirs = cite_q.get(key)
+        if not cite_dirs or len(cite_dirs) < 2:
+            continue
+        if not (claim_dirs & cite_dirs):
+            continue  # 与全部档位都不符的已由 1b 处理
+        clauses = [seg for seg in re.split(r"[；;。]",
+                                           citation_text or "")
+                   if seg.strip()]
+        key_clauses = []
+        for seg in clauses:
+            q = _extract_quantities(seg)
+            if key in q:
+                key_clauses.append((seg, q[key]))
+        if len(key_clauses) < 2:
+            continue
+        claim_circ = _content_bigrams(re.sub(
+            r"[0-9零一二三四五六七八九十百千两半]+"
+            r"(?:年|月|日|元|倍|%|％)", "", claim))
+        scored = sorted(
+            ((len(claim_circ & _content_bigrams(seg)), seg, dirs)
+             for seg, dirs in key_clauses),
+            key=lambda x: -x[0])
+        value, unit = key
+        vtxt = int(value) if value == int(value) else value
+        best_score, best_seg, best_dirs = scored[0]
+        if best_score >= 4 and best_score >= scored[1][0] + 2 \
+                and not (claim_dirs & best_dirs):
+            conflicts.append(
+                f"分档方向偷换：论断所述情形与引文中"
+                f"「{best_seg.strip()[:40]}…」一档对应，该档对数值 "
+                f"{vtxt}{unit} 的口径是{_DIR_ZH[next(iter(best_dirs))]}，"
+                f"论断却作{_DIR_ZH[next(iter(claim_dirs))]}"
+                "——引对了条、引错了档")
+            break
+        first_dirs = key_clauses[0][1]
+        if not (claim_dirs & first_dirs):
+            for seg, dirs in key_clauses[1:]:
+                if not (claim_dirs & dirs):
+                    continue
+                head = re.split(
+                    r"[0-9零一二三四五六七八九十百千两半]", seg)[0]
+                absent = _content_bigrams(head) - claim_circ
+                if len(absent) >= 2:
+                    signals.append(
+                        "论断的档位方向与引文中该数值的首档不同、与"
+                        "后续分档一致，但论断未提及后续分档的适用"
+                        "情形，请人工核对是否把加重档当作基本档、"
+                        "或只摘述加重档而未写明其适用情形")
+                break
+
+    # 信号 1c（859 新增）：论断断言「无上限」而引文明明设了上限。
+    if re.search(r"(?:没有|无|不受)[^，。；]{0,4}(?:上限|限制)", claim) \
+            and any(w in citation_text
+                    for w in ("不超过", "最高", "上限")):
+        conflicts.append("上限偷换：论断称没有上限/不受限制，引文却明确"
+                         "设了上限（如「不超过」），结论与引文相反")
+
+    # 信号 1d（859 新增）：论断断言「没有任何例外」而引文明明留了
+    # 「法律另有规定的，依照其规定」的例外通道。
+    if re.search(r"(?:没有任何|没有|无)[^，。；]{0,4}例外", claim) \
+            and "另有规定" in citation_text:
+        conflicts.append("例外偷换：论断断言没有任何例外，引文却明确留有"
+                         "「法律另有规定的，依照其规定」的例外通道")
+
+    # 信号 1e（859 新增）：论断称可判死刑而引文刑罚里没有死刑。
+    if "死刑" in claim and "死刑" not in citation_text \
+            and coverage >= 0.2:
+        conflicts.append("刑罚种类偷换：论断称可判处死刑，引文规定的"
+                         "刑罚中没有死刑")
 
     # 信号 2：否定极性冲突（论断与引文一否一肯且词面高度重合时才算）
-    claim_bigrams = _content_bigrams(claim)
-    cite_bigrams = _content_bigrams(citation_text)
-    coverage = (len(claim_bigrams & cite_bigrams) / len(claim_bigrams)
-                if claim_bigrams else 0.0)
     claim_neg = _has_negation(claim)
     cite_neg = _has_negation(citation_text)
-    if _EXEMPTION_RE.search(claim) and _DUTY_RE.search(citation_text) \
+    if _claim_exempts(claim) and _DUTY_RE.search(citation_text) \
             and coverage >= 0.2:
         conflicts.append("极性冲突：论断在免除/否定责任，引文恰恰规定"
                          "应当承担责任（义务方向相反）")
@@ -2810,12 +3602,21 @@ def tool_check_support(args):
             and coverage >= 0.2:
         conflicts.append("极性冲突：论断主张应当承担责任，引文却含免责表述"
                          "（义务方向相反）")
+    elif re.search(r"可以不", claim) and "应当" in citation_text \
+            and "可以不" not in citation_text and coverage >= 0.25:
+        conflicts.append("极性冲突：论断称可以不履行，引文却规定应当履行"
+                         "（义务方向相反）")
     elif _PROHIBIT_RE.search(citation_text) and _PERMIT_RE.search(claim) \
             and not claim_neg and coverage >= 0.25:
         conflicts.append("极性疑似冲突：引文含禁止表述（不得/禁止/不准），"
                          "论断却表述为可以/有权")
-    elif _PROHIBIT_RE.search(claim) and _PERMIT_RE.search(citation_text) \
-            and not cite_neg and coverage >= 0.25:
+    elif _PROHIBIT_RE.search(claim) and coverage >= 0.25 and any(
+            not re.search(r"(不|未|没有|无)$",
+                          citation_text[max(0, pm.start() - 4):pm.start()])
+            and any(a in claim and a in citation_text
+                    for a in ("请求", "返还", "解除", "终止", "追偿",
+                              "主张", "赔偿"))
+            for pm in _PERMIT_RE.finditer(citation_text)):
         conflicts.append("极性疑似冲突：论断表述为禁止，引文却含许可表述"
                          "（可以/有权）")
     signals.append(f"关键词（二元组）覆盖率 {coverage:.2f}"
@@ -2830,11 +3631,25 @@ def tool_check_support(args):
         conflicts.append(f"论断点名《{law_in_claim.group(1)}》，"
                          f"但引文取自《{citation_meta['law']}》")
 
+    # 信号 3b（859 新增）：组织形态错位——「股份有限公司」与
+    # 「有限责任公司」只差两字、词面覆盖极高，v2 会把讲错公司
+    # 形态的论断判成支持；两形态互斥，claim/cite 各执一词即冲突。
+    for form_a, form_b in (("股份有限公司", "有限责任公司"),):
+        if (form_a in claim and form_b in citation_text
+                and form_a not in citation_text) or \
+                (form_b in claim and form_a in citation_text
+                 and form_b not in citation_text):
+            conflicts.append(f"组织形态错位：论断讲的是「{form_a if form_a in claim else form_b}」，"
+                             f"引文讲的是「{form_b if form_a in claim else form_a}」，"
+                             "两种公司形态规则不同，不能混用")
+            break
+
     # 信号 4（857 v2）：排他性限定偷换
     downgrades = []
     if coverage >= 0.2 \
             and any(w in claim for w in _EXCLUSIVE_CLAIM_WORDS) \
-            and not any(w in citation_text for w in _EXCLUSIVE_CITE_WORDS):
+            and not any(w in citation_text for w in _EXCLUSIVE_CITE_WORDS) \
+            and not _EXCLUSIVE_CITE_RE.search(citation_text):
         conflicts.append("排他性限定偷换：论断附加了「只能/唯一/只有」等"
                          "排他表述，引文并无此限定（引文是列举或一般"
                          "规定），论断把范围收窄到了引文之外")
@@ -2843,19 +3658,32 @@ def tool_check_support(args):
         downgrades.append("论断用了「一律/任何情况下」等全称表述，"
                           "引文未见同等全称限定，请人工核对范围")
 
-    # 信号 5（857 v2）：条件偷换——引文设了条件/例外，论断按无条件表述
-    dropped = [p.pattern for p in _CONDITION_CITE_RES
-               if p.search(citation_text)]
+    # 信号 5（857 v2；859 改计数制）：条件偷换——引文设了条件，
+    # 论断按无条件表述。859 起按「被丢的强标记数」判：丢 ≥2 个强
+    # 条件必判冲突；只丢 1 个且论断毫无条件痕迹时才判；弱标记
+    # （除外/除非）单独出现只留信号（长条文的例外句误伤面太大）。
+    cite_conds = [p for p in _CONDITION_CITE_RES
+                  if p.search(citation_text)]
     claim_keeps_condition = (
         any(w in claim for w in _CONDITION_CLAIM_WORDS)
         or any(p.search(claim) for p in _CONDITION_CLAIM_RES))
-    if dropped and not claim_keeps_condition and coverage >= 0.2:
-        conflicts.append("条件偷换：引文设有条件或例外"
-                         f"（如「{dropped[0]}」），论断未提及该条件、"
+    missing_conds = [p for p in cite_conds if not p.search(claim)]
+    weak_dropped = any(p.search(citation_text)
+                       for p in _CONDITION_WEAK_RES) \
+        and not any(w in claim for w in ("除外", "除非"))
+    if cite_conds and coverage >= 0.2 \
+            and (len(missing_conds) >= 2
+                 or (missing_conds and not claim_keeps_condition)):
+        conflicts.append("条件偷换：引文设有条件"
+                         f"（如「{missing_conds[0].pattern}」等 "
+                         f"{len(missing_conds)} 处），论断未保留这些条件、"
                          "按无条件结论表述，适用范围已被改动")
-    elif dropped and not claim_keeps_condition:
-        signals.append("引文设有条件/例外而论断未提及，但词面重合过低，"
-                       "未判冲突，请人工核对")
+    elif cite_conds and missing_conds:
+        signals.append("引文设有条件而论断未全保留，但词面重合过低或"
+                       "论断留有条件痕迹，未判冲突，请人工核对")
+    if weak_dropped and not cite_conds:
+        signals.append("引文带有「除外/除非」例外表述而论断未提及，"
+                       "请人工核对例外是否影响论断")
 
     # 信号 6（857 v2）：主体偷换——成对主体在同一动作上的归属对调
     if coverage >= 0.2:
@@ -2881,9 +3709,21 @@ def tool_check_support(args):
                           "该部分无引文依据，请人工核对")
     signals.extend(downgrades)
 
+    # 排他对齐（859）：论断用「只能」类排他表述、引文本身也有排他
+    # 标记（含「非…不可」句式）时，两侧的排他语义是对齐的——这类
+    # 忠实转述常因措辞不同词面覆盖偏低，覆盖 ≥0.4 且无其他降级
+    # 信号时按支持处理，不再一律压成「部分支持」。
+    exclusive_aligned = (
+        any(w in claim for w in _EXCLUSIVE_CLAIM_WORDS)
+        and (any(w in citation_text for w in _EXCLUSIVE_CITE_WORDS)
+             or _EXCLUSIVE_CITE_RE.search(citation_text)))
     if conflicts:
         verdict = "unsupported"
         verdict_zh = "初筛：不支持（检出硬冲突信号，见 reasons）"
+    elif exclusive_aligned and coverage >= 0.4 and not downgrades:
+        verdict = "supports"
+        verdict_zh = ("初筛：支持（论断与引文的排他性表述两侧对齐，"
+                      "词面部分重合）")
     elif coverage >= 0.5 and downgrades:
         verdict = "partial"
         verdict_zh = ("初筛：部分支持（主体内容有词面依据，但有附加/全称"
@@ -2897,9 +3737,15 @@ def tool_check_support(args):
     else:
         verdict = "cannot_determine"
         verdict_zh = "初筛：无法判断（词面重合过低，启发式无从判定）"
+    if verdict == "cannot_determine" and downgrades and coverage >= 0.2:
+        # 已检出具体的超范围信号（全称/附加内容）时，不许只说
+        # 「无法判断」——降为部分支持并把信号亮出来（859）。
+        verdict = "partial"
+        verdict_zh = ("初筛：部分支持（词面重合有限，且有表述超出"
+                      "引文范围，见 reasons）")
     return {
         "schema": RESULT_SCHEMA, "tool": "check_support",
-        "method": "lexical_heuristic_v2",
+        "method": "lexical_heuristic_v3.1",
         "claim": claim, "citation": citation_meta or {"text_provided": True},
         "citation_text": citation_text,
         "verdict": verdict, "verdict_zh": verdict_zh,
@@ -3154,6 +4000,33 @@ def serve_stdio():
                                         f"JSON（{e.msg}）"}})
             continue
         try:
+            if isinstance(msg, list):
+                # 批量请求与 HTTP 传输同口径处理（859 对齐）：逐条
+                # 处理、非对象条目回 -32600、通知不回，整体以数组
+                # 一次返回；857 版把整批拒掉，与 HTTP 行为不一致。
+                # 例外：整批没有任何合法条目（含空数组）时按
+                # JSON-RPC 规范回单个 -32600（857 既有口径，保留）。
+                if not any(isinstance(e, dict) for e in msg):
+                    _emit({"jsonrpc": "2.0", "id": None,
+                           "error": {"code": -32600,
+                                     "message": "Invalid Request："
+                                                "批量请求不含任何合法条目"}})
+                    continue
+                responses = []
+                for entry in msg:
+                    if not isinstance(entry, dict):
+                        responses.append(
+                            {"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32600,
+                                       "message": "Invalid Request："
+                                                  "批量条目须为 JSON 对象"}})
+                        continue
+                    r = handle_request(entry)
+                    if entry.get("id") is not None and r is not None:
+                        responses.append(_jsonrpc_response(entry, r))
+                if responses:
+                    _emit(responses)
+                continue
             if not isinstance(msg, dict):
                 _emit({"jsonrpc": "2.0", "id": None,
                        "error": {"code": -32600,
@@ -3192,6 +4065,9 @@ def _jsonrpc_response(msg, result):
     return {"jsonrpc": "2.0", "id": msg.get("id"), "result": result}
 
 
+_HTTP_MAX_BODY = 10 * 1024 * 1024
+
+
 def serve_http(host, port):
     """MCP Streamable HTTP：POST /mcp 收 JSON-RPC（单条或批量），
 
@@ -3203,6 +4079,12 @@ def serve_http(host, port):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        # 860 修复：连接读超时。旧版无任何超时——客户端声明一个
+        # 未超上限的 Content-Length 后只发半截、保持连接不发完，
+        # handler 线程就无限期挂在 rfile.read 上（一连接钉死一
+        # 线程，实测保持 40 秒纹丝不动、只能等客户端自己断开）。
+        # 30 秒读不到新数据即断开，慢连接占用有上限。
+        timeout = 30
 
         def log_message(self, fmt, *args):  # 走 stderr，避免污染
             log("http:", fmt % args)
@@ -3232,6 +4114,14 @@ def serve_http(host, port):
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = 0
+            if length > _HTTP_MAX_BODY:
+                # 不读超大请求体（防内存耗尽），直接拒（859）；
+                # 未读的请求体还留在连接上，保活复用会把残余字节
+                # 当成下一条请求，拒后必须关连接（860）
+                self.close_connection = True
+                self._send(413, {"error": "请求体超过上限"
+                                          f"（{_HTTP_MAX_BODY} 字节）"})
+                return
             raw = self.rfile.read(length) if length > 0 else b""
             try:
                 payload = json.loads(raw.decode("utf-8"))
@@ -3240,10 +4130,27 @@ def serve_http(host, port):
                                  "error": {"code": -32700,
                                            "message": "Parse error"}})
                 return
+            if isinstance(payload, list) and not any(
+                    isinstance(e, dict) for e in payload):
+                # 与 stdio 同口径：整批无合法条目（含空数组）回
+                # 单个 -32600（JSON-RPC 规范口径）
+                self._send(200, {"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32600,
+                                           "message": "Invalid Request："
+                                                      "批量请求不含任何"
+                                                      "合法条目"}})
+                return
             messages = payload if isinstance(payload, list) else [payload]
             responses = []
             for msg in messages:
                 if not isinstance(msg, dict):
+                    # 与 stdio 同口径：非对象条目回 -32600，不许
+                    # 静默吞掉（859 对齐，857 版直接跳过）
+                    responses.append(
+                        {"jsonrpc": "2.0", "id": None,
+                         "error": {"code": -32600,
+                                   "message": "Invalid Request：批量条目"
+                                              "须为 JSON 对象"}})
                     continue
                 result = handle_request(msg)
                 if msg.get("id") is not None and result is not None:
@@ -3255,6 +4162,7 @@ def serve_http(host, port):
             else:
                 self._send(200, responses[0])
 
+    ThreadingHTTPServer.daemon_threads = True
     server = ThreadingHTTPServer((host, port), Handler)
     log(f"{SERVER_NAME} v{SERVER_VERSION} Streamable HTTP 就绪："
         f"http://{host}:{port}/mcp")
@@ -3302,8 +4210,7 @@ def server_health():
 
     _probe("flk", lambda: f"国家法律法规数据库可达"
                           f"（探活检索返回 {_flk_probe_count()} 条）")
-    _probe("moj", lambda: f"司法部行政法规库详情通道可达"
-                          f"（{moj_fetch_detail('7')['title'][:20]}…）")
+    _probe("moj", _moj_probe)
     _probe("gzk", lambda: f"国家规章库可达"
                           f"（探活检索共 {gzk_search_rows('管理办法', limit=1)[0]} 条）")
     health["live_channels"] = probes
@@ -3315,6 +4222,39 @@ def server_health():
 def _flk_probe_count():
     _total, rows = flk_search_rows("民法典", search_type=1, page_size=1)
     return len(rows)
+
+
+def _moj_probe():
+    """moj 探活（859 改口径）：详情可达只是其一，还要报标题检索的
+    实际能力——服务端过滤失效是已知事实，探活若只报「可达」会把
+    检索层面的不可用涂成全绿。判定：详情可达＋索引在位＝该通道
+    实际可用；索引缺失时在 detail 里明说覆盖极有限。
+    """
+    detail = moj_fetch_detail("7")
+    base = f"司法部行政法规库详情通道可达（{detail['title'][:20]}…）"
+    idx = _moj_index()
+    if idx["items"]:
+        base += (f"；标题索引在位（{len(idx['items'])} 部，构建于 "
+                 f"{idx['built_at']}），标题检索覆盖全库")
+        stale = _moj_index_stale_note()
+        if stale:
+            base += "；" + stale
+    else:
+        base += ("；标题索引缺失：moj 标题检索只能命中服务端返回的"
+                 "第一页（覆盖极有限），请先跑 tools/build_moj_index.py")
+    try:
+        url = (f"{MOJ_BASE}/SearchTitleFront?" + urllib.parse.urlencode(
+            {"SiteID": "122", "Query": "ZZZ不存在的法规QQQ859",
+             "Type": "1"}))
+        html_text = _fetch_alt_text(url, "司法部行政法规库检索", MOJ_BASE)
+        raw_items = _moj_parse_list(html_text)
+        base += "；服务端检索过滤：" + (
+            "已生效" if not raw_items else
+            "未生效（已知限制，标题检索由本地索引接管）" if idx["items"]
+            else "未生效（已知限制，且无本地索引兜底）")
+    except SourceError:
+        base += "；服务端检索过滤探活未完成"
+    return base
 
 
 def main():

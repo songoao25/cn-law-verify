@@ -55,7 +55,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 SERVER_NAME = "cn-law-verify"
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = "0.5.1"
 RESULT_SCHEMA = "cn-law-verify/result@1"
 SUPPORTED_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL = "2025-03-26"
@@ -3025,6 +3025,361 @@ def tool_check_citations_in_text(args):
 
 
 # ---------------------------------------------------------------------------
+# lookup 专用：法名近名纠错（843b 新增）
+#
+# 背景：842 评测（开发集）中 lookup 错别字子类 0/20——法名一字之差
+# （多为拼音输入的同音错字，如「民法点」「销法」）即三路解析全灭、
+# 直接报错，无任何容错。本节给 lookup 加一层确定性近名纠错：仅当
+# 快照／flk 实时／moj 三路既有解析全部落空时才启用，在已知法名
+# 全集上按编辑距离找候选，阈值从严（≤4 字距离 ≤1、更长 ≤2），
+# 必须唯一胜出才自动纠正并在结果里显式标注；编辑距离并列时再按
+# 拼音距离分胜负（同音错字是这类输入的主流形态），仍分不出就
+# 返回候选清单让人挑，绝不擅自选一个。不用任何语义/LLM 猜测。
+#
+# 立场：纠错只挂在 lookup 的调用点。verify_citation /
+# check_citations_in_text 等核验路径与 get_law / get_article 共用
+# 的 find_law / snapshot_find_law 一律不带纠错——引注里写错法名
+# 必须被标出来，不许被静默纠正放行（对照工具 thu 家在编造法名
+# 上栽的正是这个跟头：模糊解析把编造名映射到真法还报 verified）。
+# ---------------------------------------------------------------------------
+
+# 拼音表（无声调、常用读音）：开发期由 pypinyin 对快照库标题＋条文
+# 字集（2,868 字）离线生成后静态嵌入，运行时零依赖。仅用于编辑
+# 距离并列时的第二级判别；表中没有的字按字面自身计，永不误配。
+_PINYIN_SRC = (
+    "一:yi|丁:ding|七:qi|万:wan|丈:zhang|三:san|上:shang|下:xia|不:bu|与:yu|丑:chou|专:zhuan|且:qie|世:shi|丘:qiu|丙:bing|业:ye|东:do"
+    "ng|丝:si|丢:diu|两:liang|严:yan|丧:sang|个:ge|中:zhong|丰:feng|串:chuan|临:lin|丸:wan|丹:dan|为:wei|主:zhu|丽:li|举:ju|久:jiu|义"
+    ":yi|之:zhi|乌:wu|乎:hu|乏:fa|乐:le|乔:qiao|乘:cheng|乙:yi|九:jiu|乞:qi|也:ye|习:xi|乡:xiang|书:shu|买:mai|乱:luan|乳:ru|了:le|予:"
+    "yu|争:zheng|事:shi|二:er|于:yu|亏:kui|云:yun|互:hu|五:wu|井:jing|亚:ya|些:xie|亡:wang|交:jiao|亦:yi|产:chan|亩:mu|享:xiang|京:ji"
+    "ng|亭:ting|亮:liang|亲:qin|亵:xie|人:ren|亿:yi|仁:ren|仅:jin|仆:pu|仇:chou|今:jin|介:jie|仍:reng|从:cong|仓:cang|仔:zai|他:ta|仗"
+    ":zhang|付:fu|代:dai|令:ling|以:yi|仪:yi|们:men|仰:yang|仲:zhong|件:jian|价:jia|任:ren|份:fen|仿:fang|企:qi|伊:yi|伍:wu|伏:fu|伐:"
+    "fa|休:xiu|众:zhong|优:you|伙:huo|会:hui|伞:san|伟:wei|传:chuan|伤:shang|伦:lun|伪:wei|伯:bo|估:gu|伴:ban|伸:shen|似:shi|但:dan|"
+    "位:wei|低:di|住:zhu|佑:you|体:ti|何:he|余:yu|佛:fu|作:zuo|你:ni|佣:yong|佩:pei|佳:jia|使:shi|侈:chi|例:li|侍:shi|供:gong|依:yi|侦:"
+    "zhen|侧:ce|侨:qiao|侮:wu|侵:qin|便:bian|促:cu|俗:su|俘:fu|保:bao|俟:qi|信:xin|俭:jian|修:xiu|俱:ju|倍:bei|倒:dao|候:hou|倚:yi|借:"
+    "jie|倡:chang|债:zhai|值:zhi|倾:qing|假:jia|偏:pian|做:zuo|停:ting|健:jian|偶:ou|偷:tou|偿:chang|傍:bang|储:chu|催:cui|像:xiang"
+    "|僚:liao|僻:pi|儋:dan|儿:er|允:yun|元:yuan|兄:xiong|充:chong|兆:zhao|先:xian|光:guang|克:ke|免:mian|兑:dui|兔:tu|党:dang|兜:dou"
+    "|入:ru|全:quan|八:ba|公:gong|六:liu|兰:lan|共:gong|关:guan|兴:xing|兵:bing|其:qi|具:ju|典:dian|养:yang|兼:jian|兽:shou|冀:ji|内:"
+    "nei|册:ce|再:zai|冒:mao|写:xie|军:jun|农:nong|冠:guan|冤:yuan|冬:dong|冰:bing|冲:chong|决:jue|况:kuang|冶:ye|冷:leng|冻:dong|净"
+    ":jing|准:zhun|凌:ling|减:jian|凑:cou|凝:ning|几:ji|凡:fan|凤:feng|凭:ping|凰:huang|凶:xiong|凸:tu|凹:ao|出:chu|击:ji|函:han|凿:"
+    "zao|刀:dao|刁:diao|刃:ren|分:fen|切:qie|刊:kan|刍:chu|刑:xing|划:hua|列:lie|刘:liu|则:ze|刚:gang|创:chuang|初:chu|删:shan|判:pa"
+    "n|利:li|别:bie|刮:gua|到:dao|制:zhi|刷:shua|券:quan|刹:sha|刺:ci|刻:ke|剂:ji|削:xue|前:qian|剑:jian|剔:ti|剖:pou|剥:bo|剧:ju|剩:s"
+    "heng|剪:jian|副:fu|割:ge|剽:piao|力:li|劝:quan|办:ban|功:gong|加:jia|务:wu|劣:lie|动:dong|助:zhu|努:nu|劫:jie|励:li|劳:lao|劾:he"
+    "|势:shi|勇:yong|勉:mian|勋:xun|勒:lei|勘:kan|募:mu|勤:qin|勺:shao|勾:gou|匀:yun|包:bao|匕:bi|化:hua|北:bei|匝:za|匠:jiang|匪:fei"
+    "|匹:pi|区:qu|医:yi|匾:bian|匿:ni|十:shi|千:qian|卅:sa|升:sheng|午:wu|卉:hui|半:ban|华:hua|协:xie|卓:zhuo|单:dan|卖:mai|南:nan|博:"
+    "bo|占:zhan|卡:ka|卤:lu|卧:wo|卫:wei|印:yin|危:wei|即:ji|却:que|卵:luan|卷:juan|卸:xie|厂:chang|厅:ting|历:li|厉:li|压:ya|厌:yan|"
+    "厕:ce|厘:li|厚:hou|原:yuan|厢:xiang|厦:sha|厨:chu|去:qu|县:xian|参:can|又:you|叉:cha|及:ji|友:you|双:shuang|反:fan|发:fa|取:qu|受"
+    ":shou|变:bian|叙:xu|叛:pan|叠:die|口:kou|古:gu|句:ju|另:ling|只:zhi|叫:jiao|召:zhao|叭:ba|可:ke|台:tai|史:shi|右:you|叶:ye|号:ha"
+    "o|司:si|吃:chi|各:ge|合:he|吉:ji|吊:diao|同:tong|名:ming|后:hou|吐:tu|向:xiang|吓:xia|吕:lv|吗:ma|吞:tun|否:fou|吧:ba|吨:dun|含:h"
+    "an|听:ting|启:qi|吸:xi|吹:chui|吻:wen|吼:hou|吾:wu|呆:dai|呈:cheng|告:gao|员:yuan|周:zhou|味:wei|呼:hu|命:ming|咀:ju|和:he|咎:ji"
+    "u|咖:ka|咨:zi|咬:yao|咳:ke|咸:xian|哀:ai|品:pin|哄:hong|哈:ha|哌:pai|响:xiang|哑:ya|哗:hua|哨:shao|哲:zhe|哺:bu|唆:suo|唇:chun|唛"
+    ":ma|唤:huan|售:shou|唯:wei|唱:chang|商:shang|啡:fei|啤:pi|啮:nie|啶:ding|啸:xiao|喂:wei|善:shan|喇:la|喉:hou|喊:han|喜:xi|喧:xu"
+    "an|喷:pen|嗜:shi|嘉:jia|嘱:zhu|嘴:zui|器:qi|噪:zao|四:si|回:hui|因:yin|团:tuan|囤:dun|园:yuan|困:kun|囱:cong|围:wei|固:gu|国:guo"
+    "|图:tu|圃:pu|圆:yuan|圈:quan|土:tu|圣:sheng|在:zai|圩:wei|地:di|圳:zhen|场:chang|圾:ji|址:zhi|均:jun|坊:fang|坍:tan|坎:kan|坏:hu"
+    "ai|坐:zuo|坑:keng|块:kuai|坚:jian|坛:tan|坝:ba|坞:wu|坟:fen|坠:zhui|坡:po|坦:tan|坪:ping|坯:pi|垂:chui|垃:la|垄:long|型:xing|垒:"
+    "lei|垛:duo|垦:ken|垩:e|垫:dian|垮:kua|垸:yuan|埃:ai|埋:mai|城:cheng|域:yu|埠:bu|培:pei|基:ji|堂:tang|堆:dui|堑:qian|堡:bao|堤:di"
+    "|堪:kan|堰:yan|堵:du|塌:ta|塑:su|塔:ta|塘:tang|塞:sai|填:tian|境:jing|墒:shang|墓:mu|墙:qiang|增:zeng|墟:xu|墨:mo|墩:dun|壁:bi|壅"
+    ":yong|壤:rang|士:shi|壮:zhuang|声:sheng|壳:ke|处:chu|备:bei|复:fu|夏:xia|夕:xi|外:wai|多:duo|夜:ye|够:gou|大:da|天:tian|太:tai|"
+    "夫:fu|央:yang|夯:hang|失:shi|头:tou|夸:kua|夹:jia|夺:duo|奇:qi|奉:feng|奋:fen|奏:zou|契:qi|奖:jiang|套:tao|奠:dian|奢:she|奥:ao|"
+    "女:nv|奶:nai|奸:jian|好:hao|如:ru|妆:zhuang|妇:fu|妊:ren|妥:tuo|妨:fang|妹:mei|妻:qi|姊:zi|始:shi|姐:jie|姑:gu|姓:xing|委:wei|姻:"
+    "yin|姿:zi|威:wei|娄:lou|娠:shen|娩:mian|娱:yu|娶:qu|娼:chang|婆:po|婚:hun|婴:ying|婿:xu|媒:mei|媳:xi|嫁:jia|嫌:xian|嫖:piao|嬉:x"
+    "i|子:zi|孔:kong|孕:yun|字:zi|存:cun|孙:sun|孜:zi|孝:xiao|孟:meng|孢:bao|季:ji|孤:gu|学:xue|孳:zi|孵:fu|宁:ning|它:ta|宅:zhai|宇:y"
+    "u|守:shou|安:an|完:wan|宏:hong|宗:zong|官:guan|定:ding|宜:yi|宝:bao|实:shi|宠:chong|审:shen|客:ke|宣:xuan|室:shi|宪:xian|宫:gon"
+    "g|宰:zai|害:hai|宴:yan|宵:xiao|家:jia|容:rong|宽:kuan|宾:bin|宿:su|寄:ji|密:mi|富:fu|寒:han|寓:yu|察:cha|寡:gua|寨:zhai|寸:cun|对"
+    ":dui|寺:si|寻:xun|导:dao|寿:shou|封:feng|射:she|将:jiang|尉:wei|尊:zun|小:xiao|少:shao|尔:er|尖:jian|尘:chen|尚:shang|尝:chang"
+    "|就:jiu|尸:shi|尺:chi|尼:ni|尽:jin|尾:wei|尿:niao|局:ju|层:ceng|居:ju|屈:qu|届:jie|屋:wu|屏:ping|屑:xie|展:zhan|属:shu|屠:tu|屡:l"
+    "v|履:lv|山:shan|屿:yu|岁:sui|岔:cha|岗:gang|岛:dao|岩:yan|岭:ling|岳:yue|岸:an|峡:xia|峰:feng|峻:jun|崇:chong|崖:ya|崩:beng|嵌:q"
+    "ian|川:chuan|州:zhou|巡:xun|巢:chao|工:gong|左:zuo|巧:qiao|巨:ju|巩:gong|差:cha|己:ji|已:yi|巴:ba|巷:xiang|币:bi|市:shi|布:bu|帆"
+    ":fan|师:shi|希:xi|帐:zhang|帕:pa|帜:zhi|帝:di|带:dai|帧:zhen|席:xi|帮:bang|常:chang|帽:mao|幅:fu|幕:mu|幢:chuang|干:gan|平:ping"
+    "|年:nian|并:bing|幸:xing|幻:huan|幼:you|广:guang|庄:zhuang|庆:qing|庇:bi|床:chuang|序:xu|库:ku|应:ying|底:di|店:dian|庙:miao|府"
+    ":fu|废:fei|度:du|座:zuo|庭:ting|康:kang|庸:yong|廉:lian|廊:lang|廓:kuo|延:yan|建:jian|开:kai|异:yi|弃:qi|弄:nong|弊:bi|式:shi|引"
+    ":yin|弘:hong|弟:di|张:zhang|弥:mi|弧:hu|弩:nu|弯:wan|弱:ruo|弹:dan|强:qiang|归:gui|当:dang|录:lu|形:xing|彩:cai|彪:biao|彰:zhan"
+    "g|影:ying|役:yi|彻:che|往:wang|征:zheng|径:jing|待:dai|徇:xun|很:hen|律:lv|徐:xu|徒:tu|徕:lai|得:de|徙:xi|御:yu|循:xun|微:wei|德:"
+    "de|徽:hui|心:xin|必:bi|忆:yi|忌:ji|忍:ren|忏:chan|志:zhi|忘:wang|忙:mang|忠:zhong|忧:you|快:kuai|念:nian|忽:hu|怀:huai|态:tai|怂"
+    ":song|怕:pa|怖:bu|思:si|怠:dai|急:ji|性:xing|总:zong|恋:lian|恐:kong|恒:heng|恕:shu|恢:hui|恤:xu|恨:hen|恩:en|恪:ke|息:xi|恰:qia"
+    "|恳:ken|恶:e|恿:yong|悉:xi|悔:hui|悟:wu|悠:you|患:huan|悦:yue|悬:xuan|悼:dao|情:qing|惑:huo|惕:ti|惜:xi|惠:hui|惨:can|惩:cheng|惯"
+    ":guan|想:xiang|愈:yu|愉:yu|意:yi|感:gan|愤:fen|愿:yuan|慈:ci|慌:huang|慎:shen|慢:man|慧:hui|慰:wei|憎:zeng|憨:han|懂:dong|懈:xi"
+    "e|戊:wu|戍:shu|戏:xi|成:cheng|我:wo|戒:jie|或:huo|戗:qiang|战:zhan|戚:qi|截:jie|戳:chuo|戴:dai|户:hu|房:fang|所:suo|扇:shan|手:s"
+    "hou|才:cai|扎:zha|扑:pu|扒:ba|打:da|扔:reng|托:tuo|扣:kou|执:zhi|扩:kuo|扫:sao|扬:yang|扭:niu|扮:ban|扯:che|扰:rao|扶:fu|批:pi|扼"
+    ":e|找:zhao|承:cheng|技:ji|抄:chao|把:ba|抑:yi|抓:zhua|投:tou|抗:kang|折:zhe|抚:fu|抛:pao|抢:qiang|护:hu|报:bao|披:pi|抬:tai|抵:d"
+    "i|抹:mo|押:ya|抽:chou|担:dan|拆:chai|拉:la|拌:ban|拍:pai|拐:guai|拒:ju|拓:tuo|拔:ba|拖:tuo|拘:ju|招:zhao|拟:ni|拢:long|拣:jian|拥"
+    ":yong|拦:lan|拨:bo|择:ze|括:kuo|拯:zheng|拱:gong|拴:shuan|拷:kao|拼:pin|拽:zhuai|拾:shi|拿:na|持:chi|挂:gua|指:zhi|按:an|挑:tia"
+    "o|挖:wa|挟:xie|挠:nao|挡:dang|挤:ji|挥:hui|挪:nuo|振:zhen|挺:ting|挽:wan|捆:kun|捉:zhuo|捍:han|捎:shao|捏:nie|捐:juan|捕:bu|捞:l"
+    "ao|损:sun|捡:jian|换:huan|据:ju|捷:jie|捺:na|授:shou|掉:diao|掌:zhang|排:pai|掘:jue|掠:lve|探:tan|接:jie|控:kong|推:tui|掩:yan|"
+    "措:cuo|掷:zhi|掺:can|描:miao|提:ti|插:cha|握:wo|揭:jie|援:yuan|揽:lan|搁:ge|搏:bo|搜:sou|搞:gao|搪:tang|搬:ban|搭:da|携:xie|摄:sh"
+    "e|摆:bai|摇:yao|摊:tan|摘:zhai|摧:cui|摩:mo|摸:mo|摹:mo|撂:liao|撑:cheng|撒:sa|撕:si|撞:zhuang|撤:che|撬:qiao|播:bo|撮:cuo|撰:zh"
+    "uan|擅:shan|操:cao|擎:qing|擦:ca|攀:pan|支:zhi|收:shou|改:gai|攻:gong|放:fang|政:zheng|故:gu|效:xiao|敌:di|敏:min|救:jiu|教:jia"
+    "o|敢:gan|散:san|敦:dun|敬:jing|数:shu|敲:qiao|整:zheng|敷:fu|文:wen|斑:ban|斗:dou|料:liao|斜:xie|斤:jin|斥:chi|斧:fu|断:duan|斯:"
+    "si|新:xin|方:fang|施:shi|旁:pang|旄:mao|旅:lv|旋:xuan|族:zu|旗:qi|无:wu|既:ji|日:ri|旦:dan|旧:jiu|旨:zhi|早:zao|旬:xun|旱:han|时:"
+    "shi|旷:kuang|旺:wang|昆:kun|昌:chang|明:ming|昏:hun|易:yi|星:xing|映:ying|春:chun|是:shi|昼:zhou|显:xian|晋:jin|晒:shai|晓:xia"
+    "o|晚:wan|晤:wu|晨:chen|普:pu|景:jing|晰:xi|晶:jing|智:zhi|晾:liang|暂:zan|暑:shu|暖:nuan|暗:an|暨:ji|暴:bao|曜:yao|曝:pu|曲:qu|曳"
+    ":ye|更:geng|曾:ceng|替:ti|最:zui|月:yue|有:you|朋:peng|服:fu|朔:shuo|朗:lang|望:wang|朝:chao|期:qi|木:mu|未:wei|末:mo|本:ben|札:"
+    "zha|术:shu|朴:pu|机:ji|朽:xiu|杀:sha|杂:za|权:quan|杆:gan|李:li|材:cai|村:cun|杖:zhang|杜:du|杞:qi|束:shu|杠:gang|条:tiao|来:lai"
+    "|杨:yang|杭:hang|杰:jie|松:song|板:ban|极:ji|构:gou|枉:wang|析:xi|林:lin|枚:mei|果:guo|枝:zhi|枢:shu|枪:qiang|枯:ku|架:jia|某:mo"
+    "u|染:ran|柔:rou|柜:gui|查:cha|柩:jiu|柬:jian|柯:ke|柱:zhu|柳:liu|柴:chai|栅:zha|标:biao|栈:zhan|栏:lan|树:shu|栓:shuan|栖:qi|校:"
+    "xiao|株:zhu|样:yang|核:he|根:gen|格:ge|栽:zai|桂:gui|桅:wei|框:kuang|案:an|桌:zhuo|档:dang|桥:qiao|桨:jiang|桩:zhuang|桶:tong|"
+    "梁:liang|梅:mei|梆:bang|梗:geng|梦:meng|梭:suo|梯:ti|械:xie|梳:shu|检:jian|棉:mian|棋:qi|棍:gun|棒:bang|棘:ji|棚:peng|森:sen|棱:"
+    "leng|棺:guan|椅:yi|植:zhi|椎:chui|椒:jiao|楚:chu|楷:kai|楼:lou|概:gai|榄:lan|榜:bang|榴:liu|榻:ta|槌:chui|槛:kan|槽:cao|樟:zhan"
+    "g|模:mo|横:heng|橄:gan|橙:cheng|橡:xiang|橱:chu|欠:qian|次:ci|欢:huan|欣:xin|欺:qi|款:kuan|歇:xie|歉:qian|歌:ge|止:zhi|正:zheng"
+    "|此:ci|步:bu|武:wu|歧:qi|歪:wai|死:si|歼:jian|殊:shu|残:can|殓:lian|殖:zhi|殡:bin|殴:ou|段:duan|殷:yin|毁:hui|毋:wu|母:mu|每:mei|"
+    "毒:du|比:bi|毕:bi|毖:bi|毗:pi|毛:mao|毫:hao|毯:tan|氏:shi|民:min|氓:mang|气:qi|氚:chuan|氛:fen|氟:fu|氡:dong|氢:qing|氦:hai|氧:ya"
+    "ng|氨:an|氮:dan|氯:lv|氰:qing|水:shui|永:yong|汀:ting|汁:zhi|求:qiu|汇:hui|汉:han|汊:cha|汐:xi|汕:shan|汛:xun|汞:gong|江:jiang|"
+    "池:chi|污:wu|汰:tai|汶:wen|汽:qi|沃:wo|沈:shen|沉:chen|沙:sha|沟:gou|没:mei|沤:ou|沥:li|沫:mo|河:he|沸:fei|油:you|治:zhi|沼:zhao|"
+    "沽:gu|沾:zhan|沿:yan|泄:xie|泉:quan|泊:po|泔:gan|法:fa|泗:si|泛:fan|泞:ning|泡:pao|波:bo|泥:ni|注:zhu|泪:lei|泳:yong|泵:beng|泻:x"
+    "ie|泼:po|泽:ze|洁:jie|洄:hui|洋:yang|洒:sa|洗:xi|洛:luo|洞:dong|津:jin|洪:hong|洲:zhou|活:huo|洼:wa|洽:qia|派:pai|流:liu|浅:qian"
+    "|浆:jiang|测:ce|济:ji|浏:liu|浑:hun|浓:nong|浙:zhe|浚:jun|浦:pu|浩:hao|浪:lang|浬:li|浮:fu|浴:yu|海:hai|浸:jin|涂:tu|消:xiao|涉:s"
+    "he|涌:yong|涝:lao|涡:wo|涤:di|润:run|涨:zhang|涯:ya|液:ye|涵:han|涸:he|淀:dian|淆:xiao|淋:lin|淘:tao|淡:dan|淤:yu|淫:yin|淮:huai"
+    "|深:shen|淳:chun|混:hun|淹:yan|添:tian|清:qing|渍:zi|渎:du|渐:jian|渔:yu|渗:shen|渝:yu|渠:qu|渡:du|渣:zha|渤:bo|温:wen|港:gang|渲"
+    ":xuan|游:you|湖:hu|湘:xiang|湛:zhan|湾:wan|湿:shi|溃:kui|溉:gai|源:yuan|溜:liu|溢:yi|溪:xi|溯:su|溴:xiu|溶:rong|溺:ni|滆:ge|滋:z"
+    "i|滑:hua|滚:gun|滞:zhi|满:man|滤:lv|滥:lan|滦:luan|滨:bin|滩:tan|漂:piao|漆:qi|漏:lou|演:yan|漕:cao|漠:mo|漫:man|漱:shu|漳:zhang"
+    "|潜:qian|潢:huang|潮:chao|潼:tong|澄:cheng|澎:peng|澡:zao|澳:ao|激:ji|濒:bin|灌:guan|火:huo|灭:mie|灯:deng|灰:hui|灵:ling|灶:za"
+    "o|灾:zai|灿:can|炉:lu|炊:chui|炎:yan|炬:ju|炭:tan|炮:pao|炳:bing|炸:zha|点:dian|炼:lian|烁:shuo|烂:lan|烃:ting|烈:lie|烘:hong|烟"
+    ":yan|烤:kao|烧:shao|烫:tang|热:re|烯:xi|烷:wan|烹:peng|烽:feng|焊:han|焚:fen|焦:jiao|焰:yan|然:ran|煅:duan|煤:mei|照:zhao|煽:sh"
+    "an|熄:xi|熊:xiong|熏:xun|熔:rong|熟:shu|熬:ao|燃:ran|燕:yan|燥:zao|爆:bao|爪:zhao|爬:pa|爱:ai|父:fu|片:pian|版:ban|牌:pai|牙:ya|"
+    "牛:niu|牟:mou|牡:mu|牢:lao|牧:mu|物:wu|牲:sheng|牵:qian|特:te|牺:xi|犊:du|犬:quan|犯:fan|状:zhuang|狂:kuang|狗:gou|狩:shou|独:du"
+    "|狭:xia|狱:yu|猎:lie|猛:meng|猝:cu|猥:wei|猩:xing|猪:zhu|猫:mao|献:xian|猴:hou|猿:yuan|獭:ta|玄:xuan|率:lv|玉:yu|王:wang|玛:ma|玩"
+    ":wan|环:huan|现:xian|玳:dai|玷:dian|玺:xi|玻:bo|珂:ke|珍:zhen|珠:zhu|班:ban|球:qiu|理:li|琴:qin|琼:qiong|瑁:mao|瑕:xia|瑙:nao|瑶"
+    ":yao|璃:li|瓜:gua|瓦:wa|瓶:ping|瓷:ci|甄:zhen|甘:gan|甚:shen|生:sheng|用:yong|甩:shuai|田:tian|由:you|甲:jia|申:shen|电:dian|男"
+    ":nan|画:hua|畅:chang|界:jie|畏:wei|留:liu|畜:chu|略:lve|番:fan|畴:chou|畸:ji|疆:jiang|疏:shu|疑:yi|疗:liao|疟:nve|疫:yi|疯:feng"
+    "|疲:pi|疵:ci|疹:zhen|疼:teng|疽:ju|疾:ji|病:bing|症:zheng|痕:hen|痘:dou|痛:tong|痢:li|痫:xian|痰:tan|瘟:wen|瘠:ji|瘤:liu|瘾:yin|"
+    "癌:ai|癖:pi|癫:dian|登:deng|白:bai|百:bai|皂:zao|的:de|皆:jie|皮:pi|皿:min|盆:pen|盈:ying|益:yi|盏:zhan|盐:yan|监:jian|盒:he|盔:k"
+    "ui|盖:gai|盗:dao|盘:pan|盛:sheng|盟:meng|盥:guan|目:mu|盲:mang|直:zhi|相:xiang|盼:pan|盾:dun|省:sheng|看:kan|真:zhen|眠:mian|眷"
+    ":juan|眼:yan|着:zhe|睡:shui|督:du|睦:mu|睹:du|瞒:man|瞬:shun|瞭:liao|瞻:zhan|矗:chu|矛:mao|知:zhi|矫:jiao|短:duan|石:shi|矸:gan"
+    "|矽:xi|矾:fan|矿:kuang|码:ma|砂:sha|砍:kan|研:yan|砖:zhuan|砝:fa|砧:zhen|破:po|砷:shen|砸:za|砾:li|础:chu|硅:gui|硐:dong|硒:xi|硕"
+    ":shuo|硝:xiao|硫:liu|硬:ying|确:que|硼:peng|碍:ai|碎:sui|碑:bei|碘:dian|碧:bi|碰:peng|碱:jian|碲:di|碳:tan|碾:nian|磁:ci|磅:ban"
+    "g|磋:cuo|磨:mo|磷:lin|礁:jiao|礴:bo|示:shi|礼:li|社:she|祉:zhi|祖:zu|祛:qu|祝:zhu|神:shen|祠:ci|祥:xiang|票:piao|祭:ji|祸:huo|禀:"
+    "bing|禁:jin|福:fu|离:li|禽:qin|秀:xiu|私:si|秆:gan|秉:bing|秋:qiu|种:zhong|科:ke|秒:miao|秘:mi|租:zu|秤:cheng|秧:yang|秩:zhi|积:"
+    "ji|称:cheng|秸:jie|移:yi|秽:hui|稀:xi|程:cheng|税:shui|稞:ke|稠:chou|稳:wen|稻:dao|稽:ji|稿:gao|穆:mu|穗:sui|穴:xue|究:jiu|穷:qi"
+    "ong|空:kong|穿:chuan|突:tu|窃:qie|窄:zhai|窑:yao|窖:jiao|窗:chuang|窜:cuan|窝:wo|窟:ku|窥:kui|窨:xun|立:li|竖:shu|站:zhan|竞:ji"
+    "ng|章:zhang|竣:jun|童:tong|竭:jie|端:duan|竹:zhu|笋:sun|笔:bi|笛:di|符:fu|笨:ben|第:di|笺:jian|笼:long|等:deng|筋:jin|筏:fa|筐:k"
+    "uang|筑:zhu|筒:tong|答:da|策:ce|筛:shai|筝:zheng|筷:kuai|筹:chou|签:qian|简:jian|箔:bo|算:suan|管:guan|箭:jian|箱:xiang|篆:zhu"
+    "an|篇:pian|篡:cuan|篮:lan|篱:li|篷:peng|簧:huang|簿:bu|籍:ji|米:mi|类:lei|籽:zi|粉:fen|粒:li|粗:cu|粘:zhan|粟:su|粤:yue|粪:fen|粮"
+    ":liang|粱:liang|精:jing|糖:tang|糙:cao|系:xi|紊:wen|素:su|索:suo|紧:jin|紫:zi|累:lei|繁:fan|纂:zuan|纠:jiu|红:hong|纤:xian|约:y"
+    "ue|级:ji|纪:ji|纬:wei|纯:chun|纲:gang|纳:na|纵:zong|纷:fen|纸:zhi|纹:wen|纺:fang|纽:niu|纾:shu|线:xian|练:lian|组:zu|细:xi|织:zh"
+    "i|终:zhong|绍:shao|经:jing|绑:bang|绒:rong|结:jie|绕:rao|绘:hui|给:gei|络:luo|绝:jue|绞:jiao|统:tong|绥:sui|继:ji|绩:ji|绪:xu|续"
+    ":xu|绳:sheng|维:wei|绵:mian|绶:shou|综:zong|绾:wan|绿:lv|缀:zhui|缄:jian|缅:mian|缆:lan|缉:ji|缓:huan|缔:di|编:bian|缘:yuan|缝:"
+    "feng|缠:chan|缩:suo|缮:shan|缴:jiao|缸:gang|缺:que|罂:ying|罐:guan|网:wang|罕:han|罗:luo|罚:fa|罢:ba|罩:zhao|罪:zui|置:zhi|署:s"
+    "hu|罹:li|羁:ji|羊:yang|美:mei|群:qun|羽:yu|翁:weng|翅:chi|翔:xiang|翘:qiao|翠:cui|翡:fei|翻:fan|翼:yi|耀:yao|老:lao|考:kao|者:zh"
+    "e|而:er|耐:nai|耕:geng|耗:hao|耶:ye|耻:chi|耽:dan|聋:long|职:zhi|联:lian|聘:pin|聚:ju|肃:su|肄:yi|肇:zhao|肉:rou|肖:xiao|肝:gan|"
+    "肠:chang|股:gu|肢:zhi|肤:fu|肥:fei|肩:jian|肯:ken|育:yu|肺:fei|肽:tai|肾:shen|肿:zhong|胀:zhang|胁:xie|背:bei|胎:tai|胖:pang|胚:"
+    "pei|胜:sheng|胞:bao|胡:hu|胰:yi|胴:dong|胶:jiao|胸:xiong|胺:an|能:neng|脂:zhi|脆:cui|脉:mai|脊:ji|脏:zang|脐:qi|脑:nao|脓:nong|"
+    "脚:jiao|脱:tuo|脸:lian|腈:jing|腐:fu|腕:wan|腮:sai|腰:yao|腹:fu|腺:xian|腾:teng|膀:bang|膏:gao|膜:mo|膨:peng|膳:shan|臂:bi|臣:ch"
+    "en|自:zi|臭:chou|至:zhi|致:zhi|舆:yu|舌:she|舍:she|舒:shu|舞:wu|舟:zhou|航:hang|般:ban|舰:jian|舱:cang|舵:duo|舶:bo|舷:xian|船:c"
+    "huan|艇:ting|艏:shou|艘:sou|良:liang|艰:jian|色:se|艺:yi|艾:ai|节:jie|芒:mang|芘:pi|芜:wu|芡:qian|芦:lu|芬:fen|芯:xin|花:hua|芽:"
+    "ya|苇:wei|苏:su|苕:shao|苗:miao|若:ruo|苦:ku|苯:ben|英:ying|苷:gan|茂:mao|范:fan|茄:jia|茅:mao|茎:jing|茧:jian|茬:cha|茶:cha|荆:"
+    "jing|草:cao|荐:jian|荒:huang|荞:qiao|荡:dang|荣:rong|药:yao|荷:he|荻:di|莞:guan|莲:lian|获:huo|菌:jun|菜:cai|菱:ling|萃:cui|萄:"
+    "tao|萤:ying|营:ying|落:luo|著:zhu|葛:ge|葡:pu|董:dong|葫:hu|葬:zang|蒙:meng|蒸:zheng|蓄:xu|蓝:lan|蔑:mie|蔓:man|蔬:shu|蔽:bi|蕊:"
+    "rui|蕴:yun|薄:bao|薪:xin|薯:shu|藉:ji|藏:cang|藕:ou|藤:teng|藻:zao|虏:lu|虐:nve|虑:lv|虚:xu|虞:yu|虫:chong|虱:shi|虹:hong|虽:sui"
+    "|虾:xia|蚀:shi|蚊:wen|蚌:bang|蚕:can|蚤:zao|蚴:you|蚶:han|蛀:zhu|蛇:she|蛋:dan|蛎:li|蛏:cheng|蛤:ha|蛭:zhi|蜂:feng|蜚:fei|蜡:la|"
+    "蜱:pi|蝇:ying|螂:lang|融:rong|螨:man|螯:ao|螺:luo|蟑:zhang|蟹:xie|蠊:lian|血:xue|衅:xin|行:xing|衍:yan|衔:xian|街:jie|衡:heng|衣"
+    ":yi|补:bu|表:biao|衬:chen|衰:shuai|袋:dai|袒:tan|袖:xiu|被:bei|袭:xi|裁:cai|裂:lie|装:zhuang|裔:yi|裕:yu|裙:qun|裸:luo|裹:guo|褒"
+    ":bao|褥:ru|褪:tui|西:xi|要:yao|覆:fu|见:jian|观:guan|规:gui|视:shi|觇:chan|览:lan|觉:jue|觐:jin|角:jiao|解:jie|触:chu|言:yan|誉:"
+    "yu|誓:shi|警:jing|计:ji|订:ding|认:ren|讨:tao|让:rang|讫:qi|训:xun|议:yi|讯:xun|记:ji|讲:jiang|许:xu|讹:e|论:lun|讼:song|设:she|"
+    "访:fang|证:zheng|评:ping|识:shi|诈:zha|诉:su|诊:zhen|诋:di|词:ci|译:yi|试:shi|诗:shi|诚:cheng|话:hua|诞:dan|询:xun|诣:yi|该:gai|"
+    "详:xiang|诫:jie|诬:wu|语:yu|误:wu|诱:you|诲:hui|说:shuo|诵:song|请:qing|诸:zhu|诺:nuo|读:du|诽:fei|课:ke|诿:wei|谁:shui|调:diao|"
+    "谅:liang|谈:tan|谊:yi|谋:mou|谍:die|谎:huang|谐:xie|谓:wei|谢:xie|谣:yao|谤:bang|谦:qian|谨:jin|谩:man|谱:pu|谴:qian|谷:gu|豁:hu"
+    "o|豆:dou|豚:tun|象:xiang|豪:hao|貌:mao|贝:bei|负:fu|贡:gong|财:cai|责:ze|贤:xian|败:bai|账:zhang|货:huo|质:zhi|贩:fan|贪:tan|贫:"
+    "pin|贬:bian|购:gou|贮:zhu|贯:guan|贴:tie|贵:gui|贷:dai|贸:mao|费:fei|贺:he|贻:yi|贼:zei|贿:hui|赁:lin|赂:lu|赃:zang|资:zi|赈:zhe"
+    "n|赊:she|赋:fu|赌:du|赎:shu|赏:shang|赔:pei|赖:lai|赛:sai|赞:zan|赠:zeng|赡:shan|赢:ying|赤:chi|赦:she|赫:he|走:zou|赴:fu|赶:gan"
+    "|起:qi|超:chao|越:yue|趋:qu|趣:qu|足:zu|趸:dun|跃:yue|跌:die|跑:pao|距:ju|跟:gen|跨:kua|路:lu|跳:tiao|践:jian|踊:yong|踏:ta|踪:zo"
+    "ng|蹄:ti|蹈:dao|蹲:dun|躁:zao|身:shen|躯:qu|躲:duo|车:che|轧:ya|轨:gui|转:zhuan|轮:lun|软:ruan|轰:hong|轴:zhou|轻:qing|载:zai|轿"
+    ":jiao|较:jiao|辅:fu|辆:liang|辈:bei|辉:hui|辊:gun|辍:chuo|辐:fu|辑:ji|输:shu|辕:yuan|辖:xia|辙:zhe|辛:xin|辜:gu|辞:ci|辟:pi|辨:b"
+    "ian|辩:bian|辱:ru|边:bian|辽:liao|达:da|迁:qian|迄:qi|迅:xun|过:guo|迈:mai|迎:ying|运:yun|近:jin|返:fan|还:hai|这:zhe|进:jin|远:"
+    "yuan|违:wei|连:lian|迟:chi|迪:di|迫:po|述:shu|迷:mi|迹:ji|追:zhui|退:tui|送:song|适:shi|逃:tao|逆:ni|选:xuan|透:tou|逐:zhu|递:di"
+    "|途:tu|逗:dou|通:tong|逝:shi|逞:cheng|速:su|造:zao|逢:feng|逮:dai|逸:yi|逻:luo|逼:bi|逾:yu|遁:dun|遂:sui|遇:yu|遍:bian|遏:e|道:da"
+    "o|遗:yi|遛:liu|遣:qian|遥:yao|遭:zao|遮:zhe|遴:lin|遵:zun|避:bi|邀:yao|邓:deng|那:na|邪:xie|邮:you|邸:di|邻:lin|郁:yu|郊:jiao|郑:"
+    "zheng|部:bu|都:dou|酌:zhuo|配:pei|酐:gan|酒:jiu|酗:xu|酚:fen|酝:yun|酬:chou|酮:tong|酯:zhi|酰:xian|酵:jiao|酶:mei|酷:ku|酸:suan"
+    "|酿:niang|醇:chun|醉:zui|醋:cu|醒:xing|醚:mi|醛:quan|采:cai|释:shi|里:li|重:zhong|野:ye|量:liang|金:jin|鉴:jian|钆:ga|钇:yi|针:z"
+    "hen|钉:ding|钌:liao|钍:tu|钐:shan|钒:fan|钓:diao|钕:nv|钚:bu|钛:tai|钞:chao|钟:zhong|钠:na|钢:gang|钥:yao|钨:wu|钩:gou|钪:kang|"
+    "钬:huo|钯:ba|钱:qian|钳:qian|钴:gu|钷:po|钻:zuan|钼:mu|钽:tan|钾:jia|铀:you|铁:tie|铂:bo|铃:ling|铅:qian|铈:shi|铊:ta|铋:bi|铌:ni"
+    "|铍:pi|铐:kao|铑:lao|铒:er|铕:you|铜:tong|铝:lv|铟:yin|铡:zha|铣:xi|铥:diu|铪:ha|铬:ge|铭:ming|铯:se|铰:jiao|铱:yi|铲:chan|铳:cho"
+    "ng|铵:an|银:yin|铷:ru|铸:zhu|铺:pu|铼:lai|铽:te|链:lian|销:xiao|锁:suo|锂:li|锅:guo|锆:gao|锇:e|锈:xiu|锋:feng|锌:xin|锐:rui|锑:t"
+    "i|锗:zhe|错:cuo|锚:mao|锡:xi|锣:luo|锤:chui|锭:ding|键:jian|锯:ju|锰:meng|锶:si|锻:duan|镀:du|镁:mei|镇:zhen|镉:ge|镍:nie|镓:jia"
+    "|镜:jing|镝:di|镣:liao|镥:lu|镧:lan|镨:pu|镱:yi|镶:xiang|长:zhang|门:men|闪:shan|闭:bi|问:wen|闯:chuang|闲:xian|间:jian|闸:zha|"
+    "闹:nao|闻:wen|闽:min|阀:fa|阂:he|阅:yue|阈:yu|阐:chan|阔:kuo|阜:fu|队:dui|防:fang|阳:yang|阴:yin|阵:zhen|阶:jie|阻:zu|阿:a|附:fu|"
+    "际:ji|陆:lu|陈:chen|陋:lou|陌:mo|降:jiang|限:xian|陕:shan|陡:dou|院:yuan|除:chu|险:xian|陪:pei|陵:ling|陶:tao|陷:xian|隆:long|随"
+    ":sui|隐:yin|隔:ge|隘:ai|隙:xi|障:zhang|隧:sui|隶:li|难:nan|雄:xiong|集:ji|雇:gu|雌:ci|雏:chu|雕:diao|雨:yu|雪:xue|零:ling|雷:lei"
+    "|雹:bao|雾:wu|需:xu|震:zhen|霉:mei|霍:huo|霓:ni|霜:shuang|霞:xia|露:lu|霸:ba|霾:mai|青:qing|静:jing|非:fei|靠:kao|面:mian|革:ge|"
+    "靴:xue|靶:ba|鞋:xie|鞍:an|鞭:bian|韧:ren|韭:jiu|音:yin|韶:shao|页:ye|顶:ding|顷:qing|项:xiang|顺:shun|须:xu|顽:wan|顾:gu|顿:dun|"
+    "颁:ban|预:yu|领:ling|频:pin|颖:ying|颗:ke|题:ti|颜:yan|额:e|颠:dian|颤:chan|风:feng|飘:piao|飞:fei|食:shi|餐:can|饥:ji|饪:ren|饭:"
+    "fan|饮:yin|饰:shi|饱:bao|饲:si|饵:er|饷:xiang|饿:e|馆:guan|馈:kui|馏:liu|首:shou|香:xiang|馨:xin|马:ma|驭:yu|驮:tuo|驯:xun|驰:ch"
+    "i|驱:qu|驳:bo|驶:shi|驻:zhu|驾:jia|骂:ma|骆:luo|验:yan|骑:qi|骗:pian|骚:sao|骤:zhou|骨:gu|骸:hai|髓:sui|高:gao|魂:hun|魄:po|魔:mo"
+    "|鱼:yu|鱿:you|鲁:lu|鲂:fang|鲆:ping|鲌:ba|鲍:bao|鲐:tai|鲑:gui|鲚:ji|鲛:jiao|鲜:xian|鲟:xun|鲡:li|鲢:lian|鲤:li|鲥:shi|鲫:ji|鲮:l"
+    "ing|鲱:fei|鲳:chang|鲴:gu|鲵:ni|鲷:diao|鲸:jing|鲹:shen|鲽:die|鳊:bian|鳍:qi|鳎:ta|鳓:le|鳕:xue|鳖:bie|鳗:man|鳙:yong|鳜:gui|鳝:"
+    "shan|鳞:lin|鸟:niao|鸡:ji|鸣:ming|鸦:ya|鸭:ya|鹅:e|鹰:ying|麒:qi|麟:lin|麦:mai|麻:ma|黄:huang|黏:nian|黑:hei|默:mo|鼓:gu|鼠:shu|"
+    "鼻:bi|齐:qi|齿:chi|龄:ling|龈:ken|龋:qu|龙:long|龟:gui"
+)
+
+
+_PINYIN_CACHE = None
+
+
+def _pinyin_of(ch):
+    global _PINYIN_CACHE
+    if _PINYIN_CACHE is None:
+        table = {}
+        for pair in _PINYIN_SRC.split("|"):
+            if pair:
+                key, _, py = pair.partition(":")
+                if key and py:
+                    table[key] = py
+        _PINYIN_CACHE = table
+    return _PINYIN_CACHE.get(ch, ch)
+
+
+def _syllables(text):
+    return [_pinyin_of(ch) for ch in text]
+
+
+def _edit_distance(a, b):
+    """Levenshtein 距离；对字符串（逐字）与音节序列（逐音节）通用。"""
+    la, lb = len(a), len(b)
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        ai = a[i - 1]
+        for j in range(1, lb + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1,
+                         prev[j - 1] + (0 if ai == b[j - 1] else 1))
+        prev = cur
+    return prev[lb]
+
+
+_NAME_FORMS_CACHE = None
+
+
+def _law_name_forms():
+    """已知法名全集：{名称形式: {法规全名, ...}}，进程内缓存。
+
+    来源：本地快照库标题、flk 枚举清单（enumeration.jsonl）、moj
+    标题索引、常用简称表。每部法规登记全名与去「中华人民共和国」
+    前缀的短名两种形式。任一来源缺失/损坏时跳过该来源（纠错能力
+    降级，不影响精确查询）；gzk 国家规章库无本地名录，不在全集内。
+    """
+    global _NAME_FORMS_CACHE
+    if _NAME_FORMS_CACHE is not None:
+        return _NAME_FORMS_CACHE
+    forms = {}
+
+    def _add(title):
+        title = (title or "").strip()
+        if not title:
+            return
+        forms.setdefault(title, set()).add(title)
+        short = title[len("中华人民共和国"):] \
+            if title.startswith("中华人民共和国") else title
+        if short and short != title:
+            forms.setdefault(short, set()).add(title)
+
+    conn = _open_snapshot()
+    if conn is not None:
+        try:
+            for row in conn.execute("SELECT DISTINCT title FROM laws"):
+                _add(row[0])
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    enum_path = os.path.join(os.path.dirname(snapshot_db_path()),
+                             "enumeration.jsonl")
+    try:
+        with open(enum_path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    _add(json.loads(line).get("title"))
+    except (OSError, ValueError):
+        pass
+    for item in _moj_index_items():
+        _add(item.get("title"))
+    for alias, target in _LAW_ALIASES.items():
+        _add(target)
+        if alias:
+            forms.setdefault(alias, set()).add(target)
+    _NAME_FORMS_CACHE = forms
+    return forms
+
+
+_NEAR_NAME_SHORT_LEN = 4        # 法名 ≤4 字算短名
+_NEAR_NAME_DIST_SHORT = 1       # 短名至多差 1 字
+_NEAR_NAME_DIST_LONG = 2        # 更长的法名至多差 2 字
+
+
+def _near_name_match(name):
+    """在已知法名全集里给 name 找近名 → (kind, payload)。
+
+    kind == "corrected"：payload = (法规全名, 命中的名称形式)——
+        编辑距离最小且唯一胜出（并列时拼音距离唯一胜出）；
+    kind == "tie"：payload = [法规全名, ...]，分不出唯一胜者；
+    kind == "none"：阈值内无候选。
+    """
+    forms = _law_name_forms()
+    if not forms or not name:
+        return "none", None
+    limit = (_NEAR_NAME_DIST_SHORT if len(name) <= _NEAR_NAME_SHORT_LEN
+             else _NEAR_NAME_DIST_LONG)
+    best = {}   # 法规全名 -> (最小编辑距离, 命中形式)
+    for form, titles in forms.items():
+        if abs(len(form) - len(name)) > limit:
+            continue
+        dist = _edit_distance(name, form)
+        if dist == 0 or dist > limit:
+            continue
+        for title in titles:
+            if title not in best or dist < best[title][0]:
+                best[title] = (dist, form)
+    if not best:
+        return "none", None
+    dmin = min(d for d, _f in best.values())
+    winners = {t: f for t, (d, f) in best.items() if d == dmin}
+    if len(winners) == 1:
+        title, form = next(iter(winners.items()))
+        return "corrected", (title, form)
+    # 编辑距离并列：按拼音距离分胜负（同音错字优先），仍并列才交人挑
+    name_syl = _syllables(name)
+    phon = {t: _edit_distance(name_syl, _syllables(f))
+            for t, f in winners.items()}
+    pmin = min(phon.values())
+    phon_winners = [t for t, p in phon.items() if p == pmin]
+    if len(phon_winners) == 1:
+        title = phon_winners[0]
+        return "corrected", (title, winners[title])
+    return "tie", sorted(winners)
+
+
+def _lookup_resolvable(name):
+    """现有三路解析任一能定位即视为可解析（纠错不启用）。
+
+    口径：快照腿的包含命中是短名解析的正道（如「民法典」⊂
+    《中华人民共和国民法典》），照常算可解析；flk 实时腿只认
+    exact——其实时包含命中会把「刑罚」这类错名吸到标题中段恰好
+    含该词的司法解释批复上（842 开发集 lookup-153 的实际失败
+    模式），那不是用户要找的法，不许它挡住纠错。flk 仅包含命中
+    时先过纠错门：无近名候选或并列时仍按原名走原分发，包含命中
+    的原有行为不变。
+    任一通道报错（网络异常等）时保守地视为可解析：通道不健康时
+    绝不触发纠错，宁可让后续正式查询按原口径报错。
+    """
+    try:
+        if snapshot_find_law(name) is not None:
+            return True
+    except Exception:
+        return True
+    try:
+        found, match = find_law(name)
+        if found is not None and match == "exact":
+            return True
+    except Exception:
+        return True
+    try:
+        return moj_find_law(name) is not None
+    except Exception:
+        return True
+
+
+# ---------------------------------------------------------------------------
 # lookup：一句话直达（机器结论／人工复核清单 两段式）
 # ---------------------------------------------------------------------------
 
@@ -3109,6 +3464,24 @@ def tool_lookup(args):
     notes = []
     if alias_hit:
         notes.append(f"「{law_name}」按常用简称映射为《{alias_hit}》")
+    corrected_from = None
+    if not alias_hit and not _lookup_resolvable(lookup_name):
+        # 三路既有解析全部落空才启用近名纠错（843b）：能精确解析的
+        # 名称行为零变化；条号不存在等其他失败不经过这里。
+        kind, payload = _near_name_match(lookup_name)
+        if kind == "corrected":
+            canonical, _form = payload
+            notes.append(f"输入「{law_name}」已按近名纠正为《{canonical}》"
+                         "（近名纠错仅 lookup 提供；核验类工具对写错的"
+                         "法名不纠错、只报错）")
+            corrected_from = law_name
+            lookup_name = canonical
+        elif kind == "tie":
+            cands = "》、《".join(payload)
+            raise SourceError(
+                f"「{law_name}」与多部法规的名称都只差一两字，无法确定"
+                f"指哪一部：候选《{cands}》。下一步：请用法规全名"
+                "重新查询。")
     if num is not None:
         heading = article_heading(num, sub)
         out = tool_get_article({"law": lookup_name, "article": heading})
@@ -3133,7 +3506,8 @@ def tool_lookup(args):
         return {
             "schema": RESULT_SCHEMA, "tool": "lookup",
             "input": {"query": query, "parsed_law": lookup_name,
-                      "parsed_article": heading, "parse_via": via},
+                      "parsed_article": heading, "parse_via": via,
+                      "name_corrected_from": corrected_from},
             "machine_conclusion": conclusion,
             "human_review_checklist": checklist,
             "notes": notes + (out.get("notes") or []),
@@ -3159,7 +3533,8 @@ def tool_lookup(args):
     return {
         "schema": RESULT_SCHEMA, "tool": "lookup",
         "input": {"query": query, "parsed_law": lookup_name,
-                  "parsed_article": None, "parse_via": via},
+                  "parsed_article": None, "parse_via": via,
+                  "name_corrected_from": corrected_from},
         "machine_conclusion": conclusion,
         "human_review_checklist": list(_HUMAN_REVIEW_BASE),
         "notes": notes,

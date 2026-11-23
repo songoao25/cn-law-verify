@@ -10,7 +10,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 5.88
+  "seconds": 6.15
  },
  {
   "id": "true-002",
@@ -49,7 +49,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.01
+  "seconds": 0.0
  },
  {
   "id": "true-005",
@@ -140,7 +140,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 10.87
+  "seconds": 6.31
  },
  {
   "id": "true-012",
@@ -166,7 +166,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.03
+  "seconds": 0.0
  },
  {
   "id": "true-014",
@@ -179,7 +179,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.04
+  "seconds": 0.0
  },
  {
   "id": "true-015",
@@ -192,7 +192,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.03
+  "seconds": 0.0
  },
  {
   "id": "true-016",
@@ -205,7 +205,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.01
+  "seconds": 0.0
  },
  {
   "id": "true-017",
@@ -270,7 +270,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 9.29
+  "seconds": 5.72
  },
  {
   "id": "true-022",
@@ -400,7 +400,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 26.6
+  "seconds": 6.0
  },
  {
   "id": "true-032",
@@ -530,7 +530,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 6.1
+  "seconds": 5.38
  },
  {
   "id": "true-042",
@@ -660,7 +660,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 11.73
+  "seconds": 6.04
  },
  {
   "id": "true-052",
@@ -790,7 +790,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 7.66
+  "seconds": 5.19
  },
  {
   "id": "true-062",
@@ -920,7 +920,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 6.86
+  "seconds": 5.43
  },
  {
   "id": "true-072",
@@ -1050,7 +1050,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.38
+  "seconds": 0.3
  },
  {
   "id": "text_mismatch-002",
@@ -1063,7 +1063,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.31
+  "seconds": 0.25
  },
  {
   "id": "text_mismatch-003",
@@ -1076,7 +1076,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.15
+  "seconds": 0.13
  },
  {
   "id": "text_mismatch-004",
@@ -1089,7 +1089,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.25
+  "seconds": 0.21
  },
  {
   "id": "text_mismatch-005",
@@ -1102,7 +1102,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.21
+  "seconds": 0.26
  },
  {
   "id": "text_mismatch-006",
@@ -1115,7 +1115,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.21
+  "seconds": 0.26
  },
  {
   "id": "text_mismatch-007",
@@ -1141,7 +1141,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.05
+  "seconds": 0.07
  },
  {
   "id": "text_mismatch-009",
@@ -1154,7 +1154,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.33
+  "seconds": 0.34
  },
  {
   "id": "text_mismatch-010",
@@ -1167,7 +1167,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.24
+  "seconds": 0.11
  },
  {
   "id": "text_mismatch-011",
@@ -1180,7 +1180,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.07
+  "seconds": 0.04
  },
  {
   "id": "text_mismatch-012",
@@ -1193,7 +1193,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.04
+  "seconds": 0.03
  },
  {
   "id": "text_mismatch-013",
@@ -1206,7 +1206,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.05
+  "seconds": 0.03
  },
  {
   "id": "text_mismatch-014",
@@ -1232,7 +1232,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.06
+  "seconds": 0.03
  },
  {
   "id": "text_mismatch-016",
@@ -1245,7 +1245,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.25
+  "seconds": 0.24
  },
  {
   "id": "text_mismatch-017",
@@ -1258,7 +1258,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.13
+  "seconds": 0.08
  },
  {
   "id": "text_mismatch-018",
@@ -1271,7 +1271,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.05
+  "seconds": 0.07
  },
  {
   "id": "text_mismatch-019",
@@ -1284,7 +1284,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.1
+  "seconds": 0.04
  },
  {
   "id": "text_mismatch-020",
@@ -1297,7 +1297,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.18
+  "seconds": 0.17
  },
  {
   "id": "text_mismatch-021",
@@ -1323,7 +1323,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.02
+  "seconds": 0.01
  },
  {
   "id": "text_mismatch-023",
@@ -1362,7 +1362,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.02
+  "seconds": 0.01
  },
  {
   "id": "text_mismatch-026",
@@ -1388,7 +1388,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.07
+  "seconds": 0.09
  },
  {
   "id": "text_mismatch-028",
@@ -1401,7 +1401,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.03
+  "seconds": 0.04
  },
  {
   "id": "text_mismatch-029",
@@ -1414,7 +1414,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.06
+  "seconds": 0.04
  },
  {
   "id": "text_mismatch-030",
@@ -1427,7 +1427,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.12
+  "seconds": 0.11
  },
  {
   "id": "text_mismatch-031",
@@ -1440,7 +1440,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.05
+  "seconds": 0.02
  },
  {
   "id": "text_mismatch-032",
@@ -1453,7 +1453,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.03
+  "seconds": 0.01
  },
  {
   "id": "text_mismatch-033",
@@ -1466,7 +1466,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.04
+  "seconds": 0.03
  },
  {
   "id": "text_mismatch-034",
@@ -1492,7 +1492,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.06
+  "seconds": 0.04
  },
  {
   "id": "text_mismatch-036",
@@ -1518,7 +1518,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.01
+  "seconds": 0.0
  },
  {
   "id": "text_mismatch-038",
@@ -1531,7 +1531,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.04
+  "seconds": 0.07
  },
  {
   "id": "text_mismatch-039",
@@ -1544,7 +1544,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.04
+  "seconds": 0.06
  },
  {
   "id": "text_mismatch-040",
@@ -1570,7 +1570,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 8.87
+  "seconds": 3.88
  },
  {
   "id": "drift-002",
@@ -1583,7 +1583,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 7.11
+  "seconds": 3.79
  },
  {
   "id": "drift-003",
@@ -1596,7 +1596,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.62
+  "seconds": 4.49
  },
  {
   "id": "drift-004",
@@ -1609,7 +1609,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 7.16
+  "seconds": 3.64
  },
  {
   "id": "drift-005",
@@ -1622,7 +1622,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.29
+  "seconds": 3.62
  },
  {
   "id": "drift-006",
@@ -1635,7 +1635,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.08
+  "seconds": 3.31
  },
  {
   "id": "drift-007",
@@ -1648,7 +1648,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 6.76
+  "seconds": 3.37
  },
  {
   "id": "drift-008",
@@ -1661,7 +1661,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 5.76
+  "seconds": 4.03
  },
  {
   "id": "drift-009",
@@ -1674,7 +1674,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.94
+  "seconds": 3.72
  },
  {
   "id": "drift-010",
@@ -1687,7 +1687,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.95
+  "seconds": 3.27
  },
  {
   "id": "drift-011",
@@ -1700,7 +1700,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 9.07
+  "seconds": 9.24
  },
  {
   "id": "drift-012",
@@ -1713,7 +1713,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.5
+  "seconds": 3.65
  },
  {
   "id": "drift-013",
@@ -1726,7 +1726,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 6.78
+  "seconds": 3.48
  },
  {
   "id": "drift-014",
@@ -1739,7 +1739,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.77
+  "seconds": 3.01
  },
  {
   "id": "drift-015",
@@ -1752,7 +1752,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.43
+  "seconds": 3.37
  },
  {
   "id": "drift-016",
@@ -1765,7 +1765,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.41
+  "seconds": 3.08
  },
  {
   "id": "drift-017",
@@ -1778,7 +1778,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.74
+  "seconds": 2.56
  },
  {
   "id": "drift-018",
@@ -1791,7 +1791,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.85
+  "seconds": 2.92
  },
  {
   "id": "drift-019",
@@ -1804,7 +1804,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.7
+  "seconds": 2.79
  },
  {
   "id": "drift-020",
@@ -1817,7 +1817,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.52
+  "seconds": 2.96
  },
  {
   "id": "drift-021",
@@ -1830,7 +1830,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 16.38
+  "seconds": 12.57
  },
  {
   "id": "drift-022",
@@ -1843,7 +1843,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.08
+  "seconds": 2.73
  },
  {
   "id": "drift-023",
@@ -1856,7 +1856,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 6.21
+  "seconds": 14.54
  },
  {
   "id": "drift-024",
@@ -1869,7 +1869,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.03
+  "seconds": 2.98
  },
  {
   "id": "drift-025",
@@ -1882,7 +1882,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 5.09
+  "seconds": 2.39
  },
  {
   "id": "drift-026",
@@ -1895,7 +1895,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.98
+  "seconds": 2.37
  },
  {
   "id": "drift-027",
@@ -1908,7 +1908,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 13.03
+  "seconds": 11.8
  },
  {
   "id": "drift-028",
@@ -1921,7 +1921,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 4.92
+  "seconds": 2.99
  },
  {
   "id": "drift-029",
@@ -1934,7 +1934,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 7.84
+  "seconds": 7.67
  },
  {
   "id": "drift-030",
@@ -1947,7 +1947,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.75
+  "seconds": 2.66
  },
  {
   "id": "fabricated-001",
@@ -1960,7 +1960,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.65
+  "seconds": 2.52
  },
  {
   "id": "fabricated-002",
@@ -1973,7 +1973,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.28
+  "seconds": 2.16
  },
  {
   "id": "fabricated-003",
@@ -1986,7 +1986,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.23
+  "seconds": 2.22
  },
  {
   "id": "fabricated-004",
@@ -1999,7 +1999,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.54
+  "seconds": 2.25
  },
  {
   "id": "fabricated-005",
@@ -2012,7 +2012,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.22
+  "seconds": 2.21
  },
  {
   "id": "fabricated-006",
@@ -2025,7 +2025,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.26
+  "seconds": 2.68
  },
  {
   "id": "fabricated-007",
@@ -2038,7 +2038,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.29
+  "seconds": 2.43
  },
  {
   "id": "fabricated-008",
@@ -2051,7 +2051,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.65
+  "seconds": 2.48
  },
  {
   "id": "fabricated-009",
@@ -2064,7 +2064,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.76
+  "seconds": 2.26
  },
  {
   "id": "fabricated-010",
@@ -2077,7 +2077,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.61
+  "seconds": 2.54
  },
  {
   "id": "fabricated-011",
@@ -2090,7 +2090,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.43
+  "seconds": 2.36
  },
  {
   "id": "fabricated-012",
@@ -2103,7 +2103,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 3.05
+  "seconds": 2.54
  },
  {
   "id": "fabricated-013",
@@ -2116,7 +2116,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.83
+  "seconds": 2.1
  },
  {
   "id": "fabricated-014",
@@ -2129,7 +2129,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.61
+  "seconds": 2.08
  },
  {
   "id": "fabricated-015",
@@ -2142,7 +2142,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.6
+  "seconds": 2.22
  },
  {
   "id": "fabricated-016",
@@ -2155,7 +2155,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.86
+  "seconds": 3.02
  },
  {
   "id": "fabricated-017",
@@ -2168,7 +2168,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.63
+  "seconds": 2.14
  },
  {
   "id": "fabricated-018",
@@ -2181,7 +2181,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.67
+  "seconds": 2.3
  },
  {
   "id": "fabricated-019",
@@ -2194,7 +2194,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.08
+  "seconds": 1.99
  },
  {
   "id": "fabricated-020",
@@ -2207,7 +2207,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.16
+  "seconds": 2.41
  },
  {
   "id": "colloquial-001",
@@ -2220,7 +2220,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 1.11
+  "seconds": 1.03
  },
  {
   "id": "colloquial-002",
@@ -2285,7 +2285,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 1.33
+  "seconds": 1.07
  },
  {
   "id": "colloquial-007",
@@ -2324,7 +2324,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 1.37
+  "seconds": 1.26
  },
  {
   "id": "colloquial-010",
@@ -2363,7 +2363,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 1.23
+  "seconds": 1.37
  },
  {
   "id": "colloquial-013",
@@ -2389,7 +2389,7 @@
   "actual_verdict": "verified",
   "pass": true,
   "detail": "",
-  "seconds": 2.4
+  "seconds": 1.11
  },
  {
   "id": "colloquial-015",
@@ -2415,7 +2415,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 9.48
+  "seconds": 5.8
  },
  {
   "id": "repealed-002",
@@ -2493,7 +2493,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 7.02
+  "seconds": 5.52
  },
  {
   "id": "repealed-008",
@@ -2545,7 +2545,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.54
+  "seconds": 0.38
  },
  {
   "id": "cross_law-002",
@@ -2558,7 +2558,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.1
+  "seconds": 0.06
  },
  {
   "id": "cross_law-003",
@@ -2571,7 +2571,7 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.04
+  "seconds": 0.03
  },
  {
   "id": "cross_law-004",
@@ -2597,6 +2597,6 @@
   "actual_verdict": "not_verified",
   "pass": true,
   "detail": "",
-  "seconds": 0.12
+  "seconds": 0.09
  }
 ]

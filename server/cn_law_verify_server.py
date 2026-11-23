@@ -55,7 +55,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 SERVER_NAME = "cn-law-verify"
-SERVER_VERSION = "0.5.1"
+SERVER_VERSION = "0.5.2"
 RESULT_SCHEMA = "cn-law-verify/result@1"
 SUPPORTED_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL = "2025-03-26"
@@ -845,11 +845,11 @@ _CITATION_RE = re.compile(
     r"《([^》]{2,60})》\s*第\s*([0-9]+|[零一二三四五六七八九十百千两]+)\s*条"
     r"(?:\s*之\s*([0-9]+|[零一二三四五六七八九十百千两]+))?")
 
-# 无书名号引注（859 新增）：「根据民法典第五百七十七条」是中文法律
-# 文本里同样常见的写法，857 版只认《》形式，这类引注会被整段核验
-# 静默漏掉——编造的条文只要不写书名号就能绕过核验。法名用受限字集
-# 拼（剔除虚词/动词字，避免把「根据」「依照」等吞进法名），且必须以
-# 法规类后缀结尾；「本法/本条例」等自指称谓不算引注，另行剔除。
+# 无书名号引注的识别式：859 曾用它把「根据民法典第五百七十七条」
+# 这类裸引注也抽出来核验；866（0.5.2，用户裁定）起整段核验只认
+# 《》形式，本式不再参与引注抽取，仅保留给 _extract_preceding_quote
+# 做防御性判断（引文内部若含引注形态的文字，就不把该段引文关联给
+# 后面的引注）。它不会让任何裸引注被抽出或被核验。
 _BARE_NAME_FORBIDDEN = "根据依据按照依照关于对于向被将把与及或的了是在由从到给让这那其之说，。；、：:（）()《》「」『』\"'“”‘’\\s"
 _BARE_CITATION_RE = re.compile(
     rf"([^{_BARE_NAME_FORBIDDEN}]{{1,30}}?法典"
@@ -857,20 +857,19 @@ _BARE_CITATION_RE = re.compile(
     r"(?:条例|规定|办法|细则|解释|规则|章程|通则|法))"
     r"\s*第\s*([0-9]+|[零一二三四五六七八九十百千两]+)\s*条"
     r"(?:\s*之\s*([0-9]+|[零一二三四五六七八九十百千两]+))?")
-_BARE_SELF_REFS = {"本法", "该法", "本条例", "本办法", "本规定", "本细则",
-                   "本规则", "本章程", "该条例", "该办法"}
 
 
 def extract_citations(text):
-    """从整段文本中抽取引注：《法名》第N条 与无法名号的「法名第N条」。
+    """从整段文本中抽取引注：只抽《法名》第N条形式（866 定版）。
 
+    不带《》书名号的裸引注（如「根据民法典第五百七十七条」）一律
+    不抽取——这是明示的产品边界，见 README「已知盲区」第 9 条。
     在全角数字/繁体「條」归一化后的副本上抽取（逐字 1:1 替换，
     span 与原文位置严格一致）；繁体法名本身不做简繁转换，抽得出、
     定位不到时由核验环节如实报「未检索到」，不静默漏检。
     """
     src = _fw_norm(text or "").replace("條", "条")
     out = []
-    spans = []
     for m in _CITATION_RE.finditer(src):
         try:
             num = cn_to_int(m.group(2))
@@ -878,26 +877,6 @@ def extract_citations(text):
         except ValueError:
             continue
         out.append({"law": m.group(1), "article_num": num,
-                    "article_sub": sub,
-                    "article": article_heading(num, sub),
-                    "span": [m.start(), m.end()]})
-        spans.append((m.start(), m.end()))
-    for m in _BARE_CITATION_RE.finditer(src):
-        name = m.group(1).strip()
-        # 句中连词粘连（如「…条和公司法第十六条」的「和公司法」）：
-        # 法名不会以「和」开头，剥掉首字再用
-        if name.startswith("和") and len(name) > 3:
-            name = name[1:]
-        if name in _BARE_SELF_REFS or name.startswith(("本", "该", "此")):
-            continue
-        if any(s <= m.start() < e or s < m.end() <= e for s, e in spans):
-            continue  # 与书名号引注重叠，已由主模式抽出
-        try:
-            num = cn_to_int(m.group(2))
-            sub = cn_to_int(m.group(3)) if m.group(3) else None
-        except ValueError:
-            continue
-        out.append({"law": name, "article_num": num,
                     "article_sub": sub,
                     "article": article_heading(num, sub),
                     "span": [m.start(), m.end()]})
@@ -4236,6 +4215,8 @@ TOOLS = [
         "description": "整段文本引注核验：抽取文中全部《法名》第N条形式的引注，"
                        "逐条走存在性／效力／条文存在三检，返回逐条结论、汇总计数与"
                        "问题清单。单次上限 20 条（去重后），超出会注明未检条数。"
+                       "只认带《》书名号的引注：不带书名号裸写的「法名第N条」"
+                       "不会被抽取核验（明示边界，见 README「已知盲区」）。"
                        "注意：本工具核验引注本身真伪，不判断引注是否支持文中论点"
                        "（那是 check_support 的初筛范围）。",
         "inputSchema": {

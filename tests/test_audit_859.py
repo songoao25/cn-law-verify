@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 """859 对抗审计回归测试（离线，纯函数与协议层）。
 
-覆盖 859 打穿并修复的点：全角/繁体条号、无书名号引注抽取、
-cn_to_int 静默错位、引文抽取上限、check_support v3 新信号
-（方向/序号污染/序数称谓/主体宾语误绑/排他对齐）、stdio 批量
-与 HTTP 批量口径对齐、moj 本地标题索引加载。
+覆盖 859 打穿并修复的点：全角/繁体条号、引注抽取口径（859 曾扩到
+无书名号裸引注，866 起按用户裁定收紧回只认《》形式，本文件的
+TestExtract859 已按 866 新口径改写）、cn_to_int 静默错位、引文
+抽取上限、check_support v3 新信号（方向/序号污染/序数称谓/主体
+宾语误绑/排他对齐）、stdio 批量与 HTTP 批量口径对齐、moj 本地
+标题索引加载。
 联网部分不在此文件（见 test_full_tools.py 等）。
 """
 import json
@@ -52,19 +54,28 @@ class TestNormalize859(unittest.TestCase):
 
 
 class TestExtract859(unittest.TestCase):
-    def test_bare_citation_short_name(self):
-        out = srv.extract_citations("根据民法典第五百七十七条处理。")
-        self.assertEqual([(c["law"], c["article_num"]) for c in out],
-                         [("民法典", 577)])
+    # 抽取口径沿革：859 曾把无书名号裸引注也抽出来；866（0.5.2，
+    # 用户裁定）起整段核验只认《》形式，裸引注一律不抽。以下三条
+    # 原 859 用例已按 866 新口径改写（原断言为「抽得出」）。
+    def test_bare_citation_short_name_not_extracted(self):
+        self.assertEqual(
+            srv.extract_citations("根据民法典第五百七十七条处理。"), [])
 
-    def test_bare_citation_full_name(self):
-        out = srv.extract_citations(
-            "根据中华人民共和国民法典第五百七十七条处理。")
-        self.assertEqual(out[0]["law"], "中华人民共和国民法典")
+    def test_bare_citation_full_name_not_extracted(self):
+        self.assertEqual(
+            srv.extract_citations(
+                "根据中华人民共和国民法典第五百七十七条处理。"), [])
 
     def test_bare_self_ref_not_citation(self):
         self.assertEqual(srv.extract_citations("本法第五百七十七条另有规定。"),
                          [])
+
+    def test_mixed_only_bracketed_extracted(self):
+        # 同段里《》引注与裸引注并存：只抽《》那条，裸写的不抽
+        out = srv.extract_citations(
+            "根据民法典第五百七十七条与《中华人民共和国国歌法》第3条处理。")
+        self.assertEqual([(c["law"], c["article_num"]) for c in out],
+                         [("中华人民共和国国歌法", 3)])
 
     def test_traditional_law_name(self):
         out = srv.extract_citations("依《中華人民共和國民法典》第五百七十七條。")

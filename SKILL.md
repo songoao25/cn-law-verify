@@ -4,7 +4,7 @@ description: 在回答中引用中国法律法规条文前，先经 cn-law-verif
 license: MIT
 compatibility: 需要 cn-law-verify MCP server（stdio 或 Streamable HTTP）已连接；工具名以 server 的 tools/list 为准。
 metadata:
-  version: "0.5.1"
+  version: "0.5.2"
   status: released
 ---
 
@@ -95,6 +95,12 @@ metadata:
   引文与引注隔着完整句子的跨句引用、无引号转述不做引文比对，
   工具会明说该条只验了存在性与效力——呈现时不许把这类条目
   说成「已逐字核验」。
+- 整段核验只抽取带《》书名号的引注：文中不带书名号、直接
+  裸写的「法名第N条」（如「根据民法典第五百七十七条」）不会
+  被抽取、不会被核验，写错或编造也不会被整段核验发现。
+  交付前发现文中有裸写引注时，要么改写成《》格式再过整段
+  核验，要么逐条用 `verify_citation` 单独核，不许默认它们
+  已经被整段核验覆盖。
 - 快照降级通道（实时通道故障时）不提供条号沿革建议；条号
   不存在时按第三节处置，不许凭降级结果猜测新条号。
 

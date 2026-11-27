@@ -4,7 +4,7 @@ description: 在回答中引用中国法律法规条文前，先经 cn-law-verif
 license: MIT
 compatibility: 需要 cn-law-verify MCP server（stdio 或 Streamable HTTP）已连接；工具名以 server 的 tools/list 为准。
 metadata:
-  version: "0.5.3"
+  version: "0.5.4"
   status: released
 ---
 

@@ -4,7 +4,7 @@ description: 在回答中引用中国法律法规条文前，先经 cn-law-verif
 license: MIT
 compatibility: 需要 cn-law-verify MCP server（stdio 或 Streamable HTTP）已连接；工具名以 server 的 tools/list 为准。
 metadata:
-  version: "0.5.4"
+  version: "0.5.5"
   status: released
 ---
 
@@ -49,6 +49,9 @@ metadata:
 - **已核验**（`verdict=verified`）：存在性＋原文＋效力都过了；
 - **仅确认存在**（`verdict=exists_only`）：法存在，但效力有保留或比对
   基于上下文窗口而非全文——引用时要把保留说明一起写出来；
+  另有一种保留：引文与现行版逐字一致、但同名已废止版同一条也逐字
+  相同（`checks.version_ambiguity`），仅凭引文无法判定引用的是哪一版，
+  须按引用来源的版本重新确认，不许直接当成现行版引用。
 - **未通过核验**（`verdict=not_verified`）：不许引用，按第三节处置。
 
 ## 三、异常处置（点名＋排除）

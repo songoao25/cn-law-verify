@@ -55,7 +55,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 SERVER_NAME = "cn-law-verify"
-SERVER_VERSION = "0.5.4"
+SERVER_VERSION = "0.5.5"
 RESULT_SCHEMA = "cn-law-verify/result@1"
 SUPPORTED_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL = "2025-03-26"
@@ -2216,6 +2216,54 @@ def _match_older_version(law, num, sub, citation_text, _excerpt_ok, cache):
     return None
 
 
+def _match_same_text_repealed_version(law, num, sub, citation_text,
+                                      _excerpt_ok, cache):
+    """引文已与定位版逐字一致时，查同名已废止版同一条是否同文（F9）。
+
+    背景：小众地方法规常出现「现行版与已废止版同一条文本逐字相同」
+    （如宽甸满族自治县县城市容管理条例第二条：2020 现行版与
+    2011 已废止版逐字相同），此时仅凭引文无法判定引用的是哪一版，
+    旧版匹配（F2）永不触发——引文与定位版已逐字一致。
+
+    命中 → {"law", "official_text", "text_source"}；否则 None。
+    只看 sxx=1 的同名版本，上限 4 部；任一版本取文失败即跳过该版，
+    不把取不到当成歧义证据。比较谓词与主路径一致。
+    """
+    given = _normalize_for_compare(citation_text)
+    if not given:
+        return None
+    cands = {}
+    try:
+        _, rows = flk_search_rows(law["title"], search_type=1,
+                                  search_range=1, page_size=10)
+        for r in rows:
+            res = row_to_result(r)
+            if (res["title"] == law["title"]
+                    and res["id"] != law["id"]
+                    and res["status_code"] == 1):
+                cands[res["id"]] = res
+    except Exception:
+        return None
+    if not cands:
+        return None
+    for cand in list(cands.values())[:4]:
+        try:
+            text, source, _n = fetch_official_article(cand, num, sub,
+                                                      cache=cache)
+        except Exception:
+            continue
+        if text is None:
+            continue
+        official = _normalize_for_compare(text)
+        exact = given == official or (_excerpt_ok and given in official) \
+            or (source == "official_context_window"
+                and (given in official or official in given))
+        if exact:
+            return {"law": cand, "official_text": text,
+                    "text_source": source}
+    return None
+
+
 def _verify_citation_live(args, _cache=None, _excerpt_ok=False):
     """三检（实时通道）：存在性 / 效力 / 条文原文（给了引文再做逐字比对）。
 
@@ -2425,12 +2473,55 @@ def _verify_citation_live(args, _cache=None, _excerpt_ok=False):
                     "已经修改，现行文本与引文不一致，引用须以现行"
                     "文本为准。")
 
+    # F9 同文异版歧义：引文与定位版逐字一致时，再查同名已废止版本
+    # 同一条——若旧版条文与引文同样逐字一致，仅凭引文无法判定引用
+    # 的是现行版还是已废止版，不报 verified，降级 exists_only 并显
+    # 式标注歧义；旧版取不到或文本不同时不降级（无歧义证据，不臆测）。
+    # 与 F2 互斥（F2 只在比对失败时跑），定位版本身已是已废止/失效
+    # 时已有硬失败，也无需再查。
+    version_ambiguity = None
+    if (citation_text and article_result is not None
+            and article_result.get("ok")
+            and checks.get("text") is not None
+            and checks["text"].get("exact_match")
+            and law["status_code"] in (2, 3)):
+        try:
+            amb = _match_same_text_repealed_version(
+                law, num, sub, citation_text, _excerpt_ok, _cache)
+        except Exception:
+            amb = None
+        if amb is not None:
+            old = amb["law"]
+            version_ambiguity = {
+                "repealed_version_id": old["id"],
+                "repealed_version_promulgated":
+                    old.get("promulgated") or "",
+                "matched_version_status": old["status"],
+            }
+            checks["version_ambiguity"] = {
+                "ok": False, "warning": True,
+                "status": old["status"],
+                "detail": "引文与现行版逐字一致，但同名已废止旧版本"
+                          "同一条文与引文也逐字一致，仅凭引文无法判"
+                          "定引用的是哪一版；请按引用来源的版本重新"
+                          "确认，引用已废止文本不能作为现行依据",
+                "repealed_version_id": old["id"],
+                "repealed_version_promulgated":
+                    old.get("promulgated") or "",
+            }
+            notes.append(
+                f"注意：引文在《{old['title']}》已废止的旧版本"
+                f"（{old.get('promulgated') or '公布日期不详'}公布）"
+                "同一条中也逐字出现，无法仅凭引文判定版本；本次按"
+                "现行版比对通过，但引用前请确认所引确为现行版本。")
+
     # 总判定（三态）：全过=verified；存在但有警告/降级=exists_only；硬伤=not_verified
     hard_fail = (not checks["existence"]["ok"]
                  or law["status_code"] in (1, 4)
                  or (article_result is not None and not article_result.get("ok"))
                  or (checks.get("text") is not None and not checks["text"]["ok"]))
     degraded = (status_warn or bool(name_warn)
+                or version_ambiguity is not None
                 or (article_result is not None
                     and article_result.get("text_source") == "official_context_window"))
     if hard_fail:

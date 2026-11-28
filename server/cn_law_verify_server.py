@@ -55,7 +55,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 SERVER_NAME = "cn-law-verify"
-SERVER_VERSION = "0.5.5"
+SERVER_VERSION = "0.5.6"
 RESULT_SCHEMA = "cn-law-verify/result@1"
 SUPPORTED_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL = "2025-03-26"
@@ -3708,13 +3708,17 @@ _NEAR_NAME_DIST_SHORT = 1       # 短名至多差 1 字
 _NEAR_NAME_DIST_LONG = 2        # 更长的法名至多差 2 字
 
 
-def _near_name_match(name):
+def _near_name_match(name, alias_only=False):
     """在已知法名全集里给 name 找近名 → (kind, payload)。
 
     kind == "corrected"：payload = (法规全名, 命中的名称形式)——
         编辑距离最小且唯一胜出（并列时拼音距离唯一胜出）；
     kind == "tie"：payload = [法规全名, ...]，分不出唯一胜者；
     kind == "none"：阈值内无候选。
+    alias_only（872）：输入是简称形态（≤3 字、以「法」结尾）
+        时，只认简称形态的候选（简称表键）——防「行复法」被
+        全名形式吸走、也防简称落到不相关的长名上；真正的简称
+        展开走 _abbrev_expand，不走这条路。
     """
     forms = _law_name_forms()
     if not forms or not name:
@@ -3729,6 +3733,8 @@ def _near_name_match(name):
              else _NEAR_NAME_DIST_LONG)
     best = {}   # 法规全名 -> (最小编辑距离, 命中形式)
     for form, titles in forms.items():
+        if alias_only and form not in _LAW_ALIASES:
+            continue
         if abs(len(form) - len(name)) > limit:
             continue
         dist = _edit_distance(name, form)
@@ -3845,6 +3851,22 @@ _LAW_ALIASES = {
     # 2026-11-27 增补（867 lookup 失败 12 题全军覆没于前三条；其余为
     # 同类高频简称缺口，均经快照库／flk 实时腿核实目标唯一且可解析；
     # 「国安法」因国家安全法／香港国安法歧义不收，只收「香港国安法」）：
+    # 2026-11-28 872 修订（871 alias 5/30）：上述「国安法」不收的
+    # 决定推翻——实务中「国安法」默认指国家安全法（香港国安法须
+    # 用全称或「香港国安法」），871 复评国安法 3 题候选清单竟不含
+    # 国家安全法即因此而来；其余 9 条均为 871 点名的常用简称，目标
+    # 均经 flk 实时腿核实唯一且可解析（条数见开发集注释）：
+    "行复法": "中华人民共和国行政复议法",
+    "行许法": "中华人民共和国行政许可法",
+    "行处法": "中华人民共和国行政处罚法",
+    "土管法": "中华人民共和国土地管理法",
+    "国安法": "中华人民共和国国家安全法",
+    "文保法": "中华人民共和国文物保护法",
+    "非遗法": "中华人民共和国非物质文化遗产法",
+    "人防法": "中华人民共和国人民防空法",
+    "海洋环保法": "中华人民共和国海洋环境保护法",
+    "农安法": "中华人民共和国农产品质量安全法",
+    "气法": "中华人民共和国气象法",
     "治安法": "中华人民共和国治安管理处罚法",
     "未保法": "中华人民共和国未成年人保护法",
     "食安法": "中华人民共和国食品安全法",
@@ -4046,6 +4068,39 @@ def _flk_fallback_correction(name):
     return title, form
 
 
+def _abbrev_expand(name):
+    """简称展开（872）：未入简称表的短名按字序展开到唯一法规。
+
+    输入 ≤6 字且以「法」结尾时，取「法」前的字干，在已知法名全集
+    的短名（去「中华人民共和国」前缀）里找字干为子序列（字序一致）
+    的法规；只认以「法」结尾的法规名、取最短者，唯一才采纳。
+    多解时弃权（交回近名纠错）——如「国安法」同时是国家安全法
+    与香港国安法的子序列，取最短者（实务默认义即最短的通用法名）；
+    仍多解才弃权。字干只有 1 字时不展开（单字子序列处处命中）。
+    返回法规全名或 None。
+    """
+    if not name or len(name) > 6 or not name.endswith("法"):
+        return None
+    stem = name[:-1]
+    if len(stem) < 2:
+        return None
+    cands = set()
+    for titles in _law_name_forms().values():
+        for title in titles:
+            short = title[len("中华人民共和国"):] \
+                if title.startswith("中华人民共和国") else title
+            if not short.endswith("法"):
+                continue
+            it = iter(short)
+            if all(ch in it for ch in stem):
+                cands.add(title)
+    if not cands:
+        return None
+    ordered = sorted(cands, key=lambda t: (len(t), t))
+    best = [t for t in ordered if len(t) == len(ordered[0])]
+    return best[0] if len(best) == 1 else None
+
+
 def tool_lookup(args):
     query = _arg_str(args, "query", required=True,
                      hint="下一步：请用一句话给出要查的法规或条文，"
@@ -4058,9 +4113,32 @@ def tool_lookup(args):
         notes.append(f"「{law_name}」按常用简称映射为《{alias_hit}》")
     corrected_from = None
     if not alias_hit and not _lookup_resolvable(lookup_name):
-        # 三路既有解析全部落空才启用近名纠错（843b）：能精确解析的
+        # 三路既有解析全部落空才启用纠错（843b）：能精确解析的
         # 名称行为零变化；条号不存在等其他失败不经过这里。
-        kind, payload = _near_name_match(lookup_name)
+        # 872：纠错分三档依次尝试——①简称展开（子序列）：「行复法」
+        # 这类未入简称表的新简称，按字序展开到唯一短名；②近名纠错
+        # （简称形态输入只认简称形态候选）；③flk 检索兜底。
+        kind, payload = "none", None
+        expanded = _abbrev_expand(lookup_name)
+        if expanded is not None:
+            kind, payload = "corrected", (expanded, None)
+        if kind == "none":
+            abbrev_shaped = (len(lookup_name) <= 3
+                             and lookup_name.endswith("法"))
+            kind, payload = _near_name_match(
+                lookup_name, alias_only=abbrev_shaped)
+        if kind == "corrected":
+            # 872：近名胜出距离 ≥2 时不可靠（如「土地官理法」曾以
+            # 距离 2 落到「土地承包法」），再向 flk 问一次候选；
+            # flk 候选严格更近才采纳（距离 1 已是最优，不必再问）。
+            _canon, _form = payload
+            if _form is not None:
+                d_near = _edit_distance(lookup_name, _form)
+                if d_near >= 2:
+                    fb = _flk_fallback_correction(lookup_name)
+                    if fb is not None and _edit_distance(
+                            lookup_name, fb[1]) < d_near:
+                        kind, payload = "corrected", fb
         if kind == "none":
             # 867：本地法名全集只覆盖快照＋枚举＋司法部索引（千部
             # 级），全集外的现行法（如湿地保护法）近名纠错无候选。
@@ -4147,8 +4225,9 @@ def tool_lookup(args):
 # ---------------------------------------------------------------------------
 
 _SUPPORT_DISCLAIMER = ("本结论由零依赖词面启发式生成（关键词覆盖、逐分句核对、"
-                       "数字一致性、否定极性冲突、排他性限定、条件偷换、"
-                       "单位偷换、主体偷换、数量边界方向九类信号），"
+                       "数字一致性、否定极性冲突、情态极性反转、排他性限定、"
+                       "条件偷换、单位偷换、主体偷换、机关对调、范围扩张、"
+                       "数量边界方向十二类信号），"
                        "只是初筛，不是语义判定，不能替代人工判断；"
                        "引注是否真正支持论断，请结合条文全文与案件事实"
                        "人工复核。")
@@ -4221,6 +4300,11 @@ def _clean_for_numbers(text):
     cleaned = _ORDINAL_PARTY_RE.sub(
         "某方", _ENUM_MARK_RE.sub("", text or ""))
     cleaned = cleaned.replace("双倍", "2倍")
+    # 872：「45个工作日」里的「个」会把单位截断（抽成无单位的 45，
+    # 与引文「30个工作日」对不上号，039 因此只降级）——
+    # 「X个工作日」即 X 日，先归一化；阿拉伯数字与中文数词都处理。
+    cleaned = re.sub(r"([0-9]+|[零一二三四五六七八九十百千两]+)个工作日",
+                     r"\1日", cleaned)
     cleaned = re.sub(r"(?<![0-9第一十百千两])一次", "某次", cleaned)
     # 「百分之七十」旧正则只抽到裸值 70（无单位），与引文的
     # 「百分之二十」对不上时只能按附加数字降级——859 对抗集 u05
@@ -4349,7 +4433,11 @@ def _has_negation(text):
 
 # --- 857 v2 新增四类偷换检测（金标集 tests/support_gold.jsonl 量过） ---
 # 排他性限定：论断加「只能/唯一/只有…」而引文只是列举或一般规定。
-_EXCLUSIVE_CLAIM_WORDS = ("唯一", "只能", "仅限", "唯有", "只有")
+# 872 增补「只需/仅需」（v5-011）：「设立商事调解组织只需要
+# 30 万元以上资产」对引文五项条件——「只需」即排他断言，与
+# 「只能/只有」同族；「只要」不收（「只要…就」是忠实条件句常用形）。
+_EXCLUSIVE_CLAIM_WORDS = ("唯一", "只能", "仅限", "唯有", "只有",
+                          "只需", "仅需")
 _EXCLUSIVE_CITE_WORDS = ("唯一", "仅", "只能", "只有", "仅限", "唯有")
 # 引文侧的排他还有「非…不可」句式（859 补）：只认词表会把忠实
 # 转述误判成排他偷换。
@@ -4478,6 +4566,169 @@ def _clause_coverages(claim, cite_bigrams):
     return out
 
 
+def _number_windows(text):
+    """数字出现位置的上下文窗口（872，信号 1 锚定检查用）。
+
+    返回 [(数值, 归一单位, 窗口内容二元组)]；窗口取数字前后各
+    10 字（清洗后文本，与抽数字同一口径，含「个工作日→日」归一化）。
+    """
+    cleaned = _clean_for_numbers(text)
+    out = []
+    for m in _NUMBER_RE.finditer(cleaned):
+        raw, unit = m.group(1), _norm_unit(m.group(2) or "")
+        try:
+            if raw == "半":
+                value = 0.5
+            elif raw.replace(".", "").isdigit():
+                value = float(raw)
+            else:
+                value = float(cn_to_int(raw))
+        except (ValueError, TypeError):
+            continue
+        window = cleaned[max(0, m.start() - 10):m.end() + 10]
+        out.append((value, unit, _content_bigrams(window)))
+    return out
+
+
+def _number_anchored(claim, citation_text, value, unit):
+    """论断数字 (value, unit) 是否锚在引文同单位数字的同一事项上。
+
+    872：同单位不同值只有锚在同一事项上（前后 10 字窗口共享
+    ≥4 个内容二元组）才算改数字；否则是引文沉默事项上的附加数字。
+    实测分离度：039 共享 6、040 共享 2、对抗 u01/u03/u05 共享 5–10。
+    """
+    claim_wins = [g for v, u, g in _number_windows(claim)
+                  if v == value and u == unit]
+    cite_wins = [g for _v, u, g in _number_windows(citation_text)
+                 if u == unit]
+    for cg in claim_wins:
+        for tg in cite_wins:
+            if len(cg & tg) >= 4:
+                return True
+    return False
+
+
+def _cond_clause_overlap(claim, cond_text, missing_conds):
+    """论断与引文中含被丢条件的分句的最大词面重合度（信号 5/5b 守卫）。
+
+    872：条件偷换只在论断确实转述了那个带条件的规则时才成立——
+    论断讲的根本是另一回事（如「违法所得应当上缴国库」对
+    「未经批准擅自开展调解活动」）时，丢条件不是偷换，是引文沉默。
+    度量用论断侧占比（论断二元组 ∩ 条件分句二元组／论断二元组）：
+    实测——035 为 0.50、036 为 0、金标条件项 0.53–1.0、对抗
+    c01 0.53／c02 0.92／c03 0.60、q02 0.389；阈值 0.3（证据区间
+    (0, 0.389) 内居中；q02 是贴阈值的约束项，下一轮密封集须重测）。
+    """
+    claim_grams = _content_bigrams(claim)
+    if not claim_grams:
+        return 0.0
+    best = 0.0
+    for seg in re.split(r"[；;。]", cond_text or ""):
+        if not any(p.search(seg) for p in missing_conds):
+            continue
+        grams = _content_bigrams(seg)
+        if not grams:
+            continue
+        best = max(best, len(claim_grams & grams) / len(claim_grams))
+    return best
+
+
+_NEG_MODALS = ("不应当", "不予", "不得", "不必", "不应", "不能",
+               "不准", "禁止", "不许")
+_POS_MODALS = ("应当", "必须", "可以", "有权", "即可", "应", "可")
+_MODAL_RE2 = re.compile("|".join(
+    sorted(_NEG_MODALS + _POS_MODALS, key=len, reverse=True)))
+_MODAL_STRIP = ("予以", "加以", "进行", "给予")
+
+
+def _modal_polarity(modal):
+    return "neg" if modal in _NEG_MODALS else "pos"
+
+
+def _modal_action_pairs(text):
+    """抽（情态词，动作）对（872，信号 18 用）：情态词后 2–6 字，
+    去「予以/加以」等虚词、去标点。单字「应/可」须是独立情态词：
+    前字是「适应/反应/对应」等词的一部分时不算（「适应」里的应
+    不是情态）；「认可/许可/可能」里的可同理。"""
+    out = []
+    for m in _MODAL_RE2.finditer(text or ""):
+        if m.group(0) == "应" and m.start() > 0 \
+                and text[m.start() - 1] in "适应反应对应效应供需":
+            continue
+        if m.group(0) == "可" and m.start() > 0 \
+                and text[m.start() - 1] in "认许能可以":
+            continue
+        # 动作取情态词后第一个标点前的片段（「登记：（一）…」只取
+        # 「登记」），再在首个「的/之」（≥2 字处）截断（「登记的
+        # 当事人」只取「登记」），去虚词后取前 6 字。
+        seg = re.split(r"[，。；：、（）()]", (text or "")[m.end():],
+                       maxsplit=1)[0]
+        tail = re.sub(r"[^一-鿿A-Za-z0-9]", "", seg)
+        for prefix in _MODAL_STRIP:
+            if tail.startswith(prefix):
+                tail = tail[len(prefix):]
+                break
+        cut = re.search(r"[的之]", tail[2:])
+        if cut:
+            tail = tail[:2 + cut.start()]
+        action = tail[:6]
+        if len(action) >= 2:
+            out.append((m.group(0), action))
+    return out
+
+
+def _trigger_mentioned(claim, citation_text, pattern):
+    """论断是否提及条件前的触发情形（信号 5b 守卫）。
+
+    872：后果条件只在其触发情形被论断转述时才算被丢——取条件
+    模式命中点前 12 字为触发 span，论断须逐字含其中连续 6 字
+    才算转述了该触发（如 041 的「商事调解员未履行保密义务」；
+    v06 的「二十倍以下罚款」与论断「十万元以下罚款」无 6 字
+    重合，不算；c04 的触发在另一「或者」分支，论断没提）。
+    """
+    m = re.search(pattern, citation_text or "")
+    if not m:
+        return False
+    span = re.sub(r"[^一-鿿A-Za-z0-9]", "",
+                  citation_text[max(0, m.start() - 12):m.start()])
+    if len(span) < 6:
+        return False
+    claim_clean = re.sub(r"[^一-鿿A-Za-z0-9]", "", claim or "")
+    return any(span[i:i + 6] in claim_clean
+               for i in range(len(span) - 5))
+
+
+def _consequence_stated(claim, citation_text, pattern):
+    """论断是否陈述了条件后同分句的后果（信号 5b 第二守卫）。
+
+    872：只在论断确实说了那个带前提的后果时，丢前提才算不完整
+    ——取条件模式命中点后、同分句（遇 。； 止）内的后果 span，
+    论断须逐字含其中连续 6 字（如 041 的「由县级以上人民政府
+    司法行政部门责令改正」；c04 没说「责令暂停业务」、v06 没说
+    「吊销许可证」，都不算）。
+    """
+    m = re.search(pattern, citation_text or "")
+    if not m:
+        return False
+    rest = re.split(r"[。；]", citation_text[m.end():], maxsplit=1)[0]
+    rest_clean = re.sub(r"[^一-鿿A-Za-z0-9]", "", rest)
+    if len(rest_clean) < 6:
+        return False
+    claim_clean = re.sub(r"[^一-鿿A-Za-z0-9]", "", claim or "")
+    return any(rest_clean[i:i + 6] in claim_clean
+               for i in range(len(rest_clean) - 5))
+
+
+def _same_action(a, b):
+    """同一动作：相等，或一方是另一方的后缀（「予以登记」去虚词后
+    即「登记」；「随货运寄」与「货运寄」同动作）。"""
+    if a == b:
+        return True
+    if len(a) >= 2 and len(b) >= 2 and (a.endswith(b) or b.endswith(a)):
+        return True
+    return False
+
+
 def tool_check_support(args):
     claim = _arg_str(args, "claim", required=True,
                      hint="下一步：请给出待判断的论断原文。").strip()
@@ -4560,6 +4811,19 @@ def tool_check_support(args):
                     if (u and u in cite_units) or u in ("倍", "%")]
         add_nums = [(v, u) for v, u in missing_nums
                     if (v, u) not in sub_nums]
+        # 872：同单位不同值未必是改数字——数字须锚在同一事项上才算
+        # 对得上（如「遗失补发 15 日」对引文「审查完毕 30 日」，
+        # 数字同单位、事项完全不同，不是改数，是引文沉默）。
+        # 倍/% 类引文无同族数字时是虚构标准，维持硬冲突，不参与锚定。
+        kept_sub = []
+        for v, u in sub_nums:
+            if not any(cu == u for _cv, cu in cite_nums):
+                kept_sub.append((v, u))
+            elif _number_anchored(claim, citation_text, v, u):
+                kept_sub.append((v, u))
+            else:
+                add_nums.append((v, u))
+        sub_nums = kept_sub
         if sub_nums:
             desc = "、".join(f"{int(v) if v == int(v) else v}{u}"
                              for v, u in sub_nums)
@@ -4893,7 +5157,9 @@ def tool_check_support(args):
         and not any(w in claim for w in ("除外", "除非"))
     if cite_conds and coverage >= 0.2 \
             and (len(missing_conds) >= 2
-                 or (missing_conds and not claim_keeps_condition)):
+                 or (missing_conds and not claim_keeps_condition)) \
+            and _cond_clause_overlap(claim, cond_text,
+                                     missing_conds) >= 0.3:
         conflicts.append("条件偷换：引文设有条件"
                          f"（如「{missing_conds[0].pattern}」等 "
                          f"{len(missing_conds)} 处），论断未保留这些条件、"
@@ -4950,6 +5216,12 @@ def tool_check_support(args):
                          "内容、与引文词面几乎无重合（"
                          + "；".join(c[:20] for c in fabricated[:2])
                          + "…），该部分无引文依据")
+    elif fabricated and any(w in fabricated[0] for w in ("一律", "一概")):
+        # 872：一律＋编造后果是绝对化的无依据断言（「一律吊销资格
+        # 并追究刑事责任」），不是程度问题，直接判冲突。
+        conflicts.append("附加编造：论断分句「" + fabricated[0][:24]
+                         + "」以「一律」断言处罚/责任类后果、与引文"
+                         "词面几乎无重合，该部分无引文依据")
     elif fabricated:
         downgrades.append("论断分句「" + fabricated[0][:24]
                           + "」带实质内容但与引文词面几乎无重合，"
@@ -5218,6 +5490,126 @@ def tool_check_support(args):
         conflicts.append("损失承担反转：引文规定造成损失应当赔偿，"
                          "论断却让受损方自行承担，责任归属被反转")
 
+    # 信号 18（872 新增）：情态极性反转——论断与引文对同一动作
+    # 一否一肯（如「应当予以登记」对「不予登记」、「不必随货运寄」
+    # 对「应随货运寄」）。只认贴在同一动作上的情态词对：否定
+    # （不予/不得/不必/不应当/不应/不能/不准/禁止）vs 肯定
+    # （应当/必须/可以/有权/应/即可/可）；应当→可以的弱化不算
+    # 反转（忠实转述常换措辞，053 的「可以＋其他证明文件」由
+    # 信号 20 的另选扩张捕捉）。
+    if coverage >= 0.2:
+        _polarity_hit = None
+        for cm, ca in _modal_action_pairs(claim):
+            for tm, ta in _modal_action_pairs(citation_text):
+                if _same_action(ca, ta) \
+                        and _modal_polarity(cm) != _modal_polarity(tm):
+                    _polarity_hit = (cm, tm, ta)
+                    break
+            if _polarity_hit:
+                break
+        if _polarity_hit:
+            cm, tm, ta = _polarity_hit
+            conflicts.append(f"情态极性反转：动作「{ta}」在引文中是"
+                             f"「{tm}」表述，论断却作「{cm}」——义务/"
+                             "许可方向相反")
+
+    # 信号 19（872 新增）：机关/主管部门对调通用化——信号 6 的成对
+    # 主体表只认 9 对民事主体，信号 11 只认「X 是主管部门」句式；
+    # 行政机关在「向 X 申请」「由 X 责令/制定」里的对调此前无信号
+    # （015 国务院民航主管部门 vs 地区民航管理机构、044 商事调解
+    # 组织 vs 司法行政部门、039/056 同类）。同一动作、双方各执
+    # 一词、互不为子串时判冲突；「单独」对「会同」另计。
+    if coverage >= 0.2:
+        def _agency_of(pattern, text):
+            m = re.search(pattern, text or "")
+            return m.group(1) if m else None
+
+        _to_claim = _agency_of(r"向([^，。；]{2,18}?)(?:提出申请|申请)",
+                               claim)
+        _to_cite = _agency_of(r"向([^，。；]{2,18}?)(?:提出申请|申请)",
+                              citation_text)
+        if _to_claim and _to_cite and _to_claim != _to_cite \
+                and _to_claim not in _to_cite \
+                and _to_cite not in _to_claim:
+            conflicts.append(f"机关对调：论断称向「{_to_claim}」申请，"
+                             f"引文却是向「{_to_cite}」申请，受理机关不同")
+        for _verb in ("责令", "处罚", "制定", "决定", "批准", "许可",
+                      "承担", "负责", "支付", "赔偿", "履行", "返还"):
+            _by_claim = _agency_of(
+                r"由([^，。；]{2,20}?)" + _verb, claim)
+            _by_cite = _agency_of(
+                r"由([^，。；]{2,20}?)" + _verb, citation_text)
+            if _by_claim and _by_cite and _by_claim != _by_cite \
+                    and _by_claim not in _by_cite \
+                    and _by_cite not in _by_claim:
+                conflicts.append(f"机关对调：动作「{_verb}」在引文中由"
+                                 f"「{_by_cite}」，论断却由「{_by_claim}」，"
+                                 "实施主体不同")
+                break
+        if re.search(r"(?:单独|独自)[^，。；]{0,6}制定", claim) \
+                and "会同" in citation_text \
+                and "制定" in citation_text:
+            conflicts.append("制定主体偷换：论断称单独制定，引文却规定"
+                             "多部门会同制定，制定主体被收窄")
+
+    # 信号 20（872 新增）：适用范围扩张——论断用全称量词（所有/
+    # 一切/任何/全部）把引文限定过的范围说成无限定（如「所有植物
+    # 产品」对引文「必须检疫的植物和植物产品」「属于下列情况的」），
+    # 或用「或者其他 X」另加引文没有的替代凭证/对象（如 053）。
+    # 只认引文里确实有限定词的情形：限定词不在引文里时，全称是
+    # 忠实转述，不判。
+    if coverage >= 0.2:
+        m_uni = re.search(
+            r"(?:所有|一切|任何|全部)([^，。；]{2,10}?)"
+            r"(?:在|都|必须|应当|均|须|要|得|应|是|为|有|与|及|、|，|。|$)",
+            claim)
+        if m_uni:
+            _noun = m_uni.group(1)
+            _qual_before = re.search(
+                r"(?:必须|应当|需要)[^，。；]{0,10}的[^，。；]{0,6}"
+                + re.escape(_noun), citation_text)
+            _qual_after = re.search(
+                re.escape(_noun)
+                + r"[，。][^，。；]{0,8}(?:属于|限于|仅限|仅)",
+                citation_text)
+            _qual_hit = _qual_before or _qual_after
+            _qual_in_claim = (
+                re.search(r"(?:必须|应当|需要)[^，。；]{0,10}的[^，。；]{0,6}"
+                          + re.escape(_noun), claim)
+                or re.search(re.escape(_noun)
+                             + r"[，。][^，。；]{0,8}(?:属于|限于|仅限|仅)",
+                             claim))
+            if _qual_hit and not _qual_in_claim:
+                conflicts.append(f"范围扩张：论断把范围说成「所有{_noun}」，"
+                                 f"引文却限定为「{_qual_hit.group(0)[:20]}…」"
+                                 "——限定条件被丢掉，适用范围被扩大")
+        m_alt = re.search(r"(?:或者|或)其他([^，。；]{2,10})", claim)
+        if m_alt and m_alt.group(1) not in citation_text:
+            conflicts.append(f"范围扩张：论断另加了「其他{m_alt.group(1)}」，"
+                             "引文并无这一替代项，适用范围被扩大")
+
+    # 信号 5b（872 新增，只降级）：后果条件丢失——引文以「造成严重
+    # 后果」「情节严重」等为适用前提，论断摘了后果、丢了前提
+    # （041：调解员未履行保密义务「造成严重后果」才罚，论断按
+    # 无条件表述）。只降级不判冲突：论断所述后果本身没错，只是不
+    # 完整；且须同时满足两守卫——论断提及该前提的触发情形
+    # （_trigger_mentioned）且陈述了该前提后的后果
+    # （_consequence_stated），否则是另一档的前提、与论断无关
+    # （v06 实测：另一档的「情节严重」不牵连论断引用的罚款档；
+    # c04 实测：触发在另一「或者」分支、且没说「责令暂停业务」）。
+    if coverage >= 0.5:
+        for _pat in (r"造成[^，。；]{0,8}后果", r"情节严重",
+                     r"后果严重", r"造成[^，。；]{0,8}损失"):
+            if re.search(_pat, citation_text) \
+                    and not re.search(_pat, claim) \
+                    and _trigger_mentioned(claim, citation_text, _pat) \
+                    and _consequence_stated(claim, citation_text, _pat):
+                downgrades.append("论断丢了引文的后果/情节前提（如"
+                                  "「造成严重后果」），该处罚/后果"
+                                  "只在该前提下才成立，请人工核对")
+                signals.append(downgrades[-1])
+                break
+
     # 排他对齐（859）：论断用「只能」类排他表述、引文本身也有排他
     # 标记（含「非…不可」句式）时，两侧的排他语义是对齐的——这类
     # 忠实转述常因措辞不同词面覆盖偏低，覆盖 ≥0.4 且无其他降级
@@ -5279,6 +5671,58 @@ def tool_check_support(args):
         verdict = "partial"
         verdict_zh = ("初筛：部分支持（词面重合有限，且有表述超出"
                       "引文范围，见 reasons）")
+    # 872：partial 须有实质分句依据——「实质分句」指内容二元组 ≥4、
+    # 不以「对/关于/根据/按照/在」开头、不以「的/后/时/前/之」结尾
+    # 的分句（「对不予登记的」「设立商事调解组织后」只是条件框架，
+    # 不是独立命题）。partial 的三条来路（覆盖≥0.5＋降级、覆盖
+    # ≥0.28＋任一分句覆盖、尾部抬升）一律要求至少一个实质分句
+    # 覆盖 ≥0.4，否则引文根本没说到论断的正事，落 cannot_determine
+    # （012/032/040 的 partial 即由此纠回；金标 partial 最低 0.86、
+    # 对抗 q01 0.44、f03 0.61，均不受影响）。
+    # 另：降级信号若全是「附加数字」（信号 1），且无实质分句
+    # ≥0.8——论断的正事就是那个引文没有的数字（如「有效期为
+    # 10 年」）——也不给 partial（016）。
+    # 反向：cannot_determine 但某实质分句覆盖 ≥0.8 且整体覆盖
+    # ≥0.2 时，论断确有一部分被引文肯定，抬为 partial（022：
+    # 「记大过 18 个月」全对，只多了一句引文没说的）。
+    def _supporting_clause_exists(threshold):
+        for seg in _CLAUSE_SPLIT_RE.split(claim or ""):
+            seg = seg.strip()
+            if not seg:
+                continue
+            grams = _content_bigrams(seg)
+            if len(grams) < 4:
+                continue
+            frame_form = (seg.startswith(("对", "关于", "根据", "按照", "在"))
+                          or seg.endswith(("的", "后", "时", "前", "之")))
+            cov = len(grams & cite_bigrams) / len(grams)
+            if cov < threshold:
+                continue
+            # 框架形分句一般不算独立命题，但长且几乎全对的分句是
+            # 规则本身的适用条件（如 v11「根据行为人在违反治安管理
+            # 行为中所起的作用」17 词 1.0），须算——门槛：≥12 词且
+            # 覆盖 ≥0.9（040 的「通用机场使用许可证遗失的」11 词
+            # 0.73，两项都不达，不算）。
+            if frame_form and not (len(grams) >= 12 and cov >= 0.9):
+                continue
+            return True
+        return False
+
+    if verdict == "partial" and not _supporting_clause_exists(0.4):
+        verdict = "cannot_determine"
+        verdict_zh = ("初筛：无法判断（论断中没有实质分句被引文"
+                      "覆盖，启发式无从判定）")
+    elif verdict == "partial" and downgrades \
+            and all(d.startswith("论断中的数字") for d in downgrades) \
+            and not _supporting_clause_exists(0.8):
+        verdict = "cannot_determine"
+        verdict_zh = ("初筛：无法判断（论断的数字部分无引文依据，"
+                      "且无其他实质内容被引文覆盖）")
+    elif verdict == "cannot_determine" \
+            and _supporting_clause_exists(0.8) and coverage >= 0.2:
+        verdict = "partial"
+        verdict_zh = ("初筛：部分支持（论断中部分实质分句有引文"
+                      "依据，但有内容超出引文范围，见 reasons）")
     if is_question and not conflicts:
         # 867：问句不是论断（见函数开头 is_question）——无硬冲突时
         # 一律无法判断，不许按词面重合判支持/部分支持。
@@ -5287,7 +5731,7 @@ def tool_check_support(args):
                       "无从判定；如需判断请先把问句改写成陈述句）")
     return {
         "schema": RESULT_SCHEMA, "tool": "check_support",
-        "method": "lexical_heuristic_v4.0",
+        "method": "lexical_heuristic_v5.0",
         "claim": claim, "citation": citation_meta or {"text_provided": True},
         "citation_text": citation_text,
         "verdict": verdict, "verdict_zh": verdict_zh,
